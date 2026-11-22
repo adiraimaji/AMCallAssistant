@@ -1,0 +1,472 @@
+package com.adiraimaji.amcallassistant.ui.screens
+
+import android.content.Intent
+import android.media.AudioManager
+import android.net.Uri
+import android.os.Looper
+import com.google.common.util.concurrent.Futures
+import com.adiraimaji.amcallassistant.answering.AnswerDiagnostics
+import com.adiraimaji.amcallassistant.answering.Greeting
+import com.adiraimaji.amcallassistant.audio.Transcoder
+import com.adiraimaji.amcallassistant.capture.FakeRecorder
+import com.adiraimaji.amcallassistant.playback.SoundPosition
+import com.adiraimaji.amcallassistant.recordings.Recording
+import com.adiraimaji.amcallassistant.recordings.Recordings
+import com.adiraimaji.amcallassistant.recordings.Waveforms
+import com.adiraimaji.amcallassistant.ui.MainViewModel
+import com.adiraimaji.amcallassistant.ui.Screen
+import com.adiraimaji.amcallassistant.ui.UiState
+import com.adiraimaji.amcallassistant.ui.convertToM4a
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.ConscryptMode
+import java.util.Collections
+
+/**
+ * The player, Share and the log, as the view model runs them - pinned
+ * before they move into holders of their own (the 1.0 restructuring). The
+ * media session is never reached here (ScreenTest's never connects), so
+ * these hold what the screen does before it answers, and when it cannot.
+ */
+@RunWith(RobolectricTestRunner::class)
+@ConscryptMode(ConscryptMode.Mode.OFF)
+@Config(sdk = [36])
+class PlaybackAndShareTest : ScreenTest() {
+
+    private val app get() = RuntimeEnvironment.getApplication()
+
+    private fun recording(stamp: String, caller: String) = Recording(
+        name = "${stamp}_in.ogg",
+        uri = Uri.parse("amcallassistant-test://$stamp"),
+        whenLabel = "",
+        incoming = true,
+        durationLabel = "1:00",
+        sizeLabel = "1.0 MB",
+        caller = caller,
+    )
+
+    private val olivia = recording("20261021_160200", "Olivia Bennett")
+    private val marcus = recording("20261021_152400", "Marcus Chen")
+
+    private val heard: MutableList<String> = Collections.synchronizedList(mutableListOf())
+    private var listening: Job? = null
+
+    /** Every snackbar [vm] asks for, from now on. */
+    private fun listen(vm: MainViewModel) {
+        listening = CoroutineScope(Dispatchers.Unconfined).launch { vm.notices.collect { heard += it } }
+    }
+
+    @Before fun inventedWaveforms() {
+        Waveforms.override = { name -> Fixtures.waveform(name.hashCode().toLong()) }
+    }
+
+    @After fun noStandIns() {
+        listening?.cancel()
+        Recordings.override = null
+        Waveforms.override = null
+        convertToM4a = Transcoder::toM4a
+        app.getSystemService(AudioManager::class.java).mode = AudioManager.MODE_NORMAL
+    }
+
+    /** Android gives a player no sound during a call: Play says why
+     *  instead of doing nothing, in a snackbar and the log. */
+    @Test fun aRecordingDoesNotPlayDuringACall() {
+        val vm = viewModel(UiState(recordings = listOf(olivia)))
+        listen(vm)
+        app.getSystemService(AudioManager::class.java).mode = AudioManager.MODE_IN_CALL
+        vm.play(olivia)
+        assertNull(vm.state.value.playingName)
+        assertEquals(listOf("A recording does not play during a call"), heard)
+        assertTrue(vm.state.value.log.contains("] a recording does not play during a call"))
+    }
+
+    /** Nor while a greeting's take may have the microphone: over the
+     *  loudspeaker it would go into the greeting. */
+    @Test fun aRecordingDoesNotPlayWhileTheGreetingIsRecorded() {
+        val vm = viewModel(UiState(recordings = listOf(olivia)))
+        listen(vm)
+        val take = Any()
+        Greeting.hold(take)
+        try {
+            vm.play(olivia)
+            assertNull(vm.state.value.playingName)
+            assertEquals(listOf("A recording does not play while your greeting is recorded"), heard)
+        } finally {
+            Greeting.letGo(take)
+        }
+    }
+
+    /** "Earpiece" in Settings, on a phone with one: a recording opens at the
+     *  earpiece, its attributes set before it is prepared - not a moment on
+     *  the loudspeaker first. */
+    @Test fun theEarpieceSettingOpensARecordingAtTheEarpiece() {
+        shadowOf(app.getSystemService(AudioManager::class.java)).setOutputDevices(
+            listOf(
+                org.robolectric.shadows.AudioDeviceInfoBuilder.newBuilder()
+                    .setType(android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE).build(),
+            ),
+        )
+        com.adiraimaji.amcallassistant.playback.PlayThroughSetting.set(app, com.adiraimaji.amcallassistant.playback.PlayThrough.EARPIECE)
+        val session = org.mockito.Mockito.mock(androidx.media3.session.MediaController::class.java)
+        org.mockito.Mockito.`when`(session.audioAttributes).thenReturn(androidx.media3.common.AudioAttributes.DEFAULT)
+        val vm = viewModel(UiState(recordings = listOf(olivia)), connectSession = { Futures.immediateFuture(session) })
+        vm.screenResumed(true)
+        vm.play(olivia)
+        shadowOf(Looper.getMainLooper()).idle()
+        val order = org.mockito.Mockito.inOrder(session)
+        order.verify(session).setMediaItem(org.mockito.Mockito.any())
+        order.verify(session).setAudioAttributes(
+            com.adiraimaji.amcallassistant.playback.SessionPlayer.attributes(com.adiraimaji.amcallassistant.playback.Output.EARPIECE),
+            false,
+        )
+        order.verify(session).prepare()
+        order.verify(session).play()
+    }
+
+    @Test fun onTheLoudspeakerARecordingOpensAsBefore() {
+        val session = org.mockito.Mockito.mock(androidx.media3.session.MediaController::class.java)
+        org.mockito.Mockito.`when`(session.audioAttributes).thenReturn(androidx.media3.common.AudioAttributes.DEFAULT)
+        val vm = viewModel(UiState(recordings = listOf(olivia)), connectSession = { Futures.immediateFuture(session) })
+        vm.play(olivia)
+        shadowOf(Looper.getMainLooper()).idle()
+        org.mockito.Mockito.verify(session, org.mockito.Mockito.never())
+            .setAudioAttributes(org.mockito.Mockito.any(), org.mockito.Mockito.anyBoolean())
+        org.mockito.Mockito.verify(session).play()
+    }
+
+    /** A take pauses a recording playing: over the loudspeaker it went into
+     *  the new greeting. */
+    /**
+     * A call holding a recording back reaches the watch at the ear: raised
+     * for the call, under the call's screen, the recording is moved to the
+     * earpiece before it plays on. Unwatched, it played on 1.8 s from the
+     * loudspeaker at the ear (the Honor, 2026-11-16).
+     */
+    @Test fun aCallHoldingARecordingBackLetsTheSensorMoveIt() {
+        val audio = app.getSystemService(AudioManager::class.java)
+        shadowOf(audio).setOutputDevices(
+            listOf(
+                org.robolectric.shadows.AudioDeviceInfoBuilder.newBuilder()
+                    .setType(android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE).build(),
+            ),
+        )
+        val proximity = org.robolectric.shadows.ShadowSensor.newInstance(android.hardware.Sensor.TYPE_PROXIMITY)
+            .also { shadowOf(it).setMaximumRange(5f) }
+        val sensors = shadowOf(app.getSystemService(android.hardware.SensorManager::class.java))
+        sensors.addSensor(proximity)
+        shadowOf(app.getSystemService(android.os.PowerManager::class.java))
+            .setIsWakeLockLevelSupported(android.os.PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, true)
+        val session = org.mockito.Mockito.mock(androidx.media3.session.MediaController::class.java)
+        org.mockito.Mockito.`when`(session.audioAttributes).thenReturn(androidx.media3.common.AudioAttributes.DEFAULT)
+        val vm = viewModel(UiState(recordings = listOf(olivia)), connectSession = { Futures.immediateFuture(session) })
+        vm.screenResumed(true)
+        vm.play(olivia)
+        shadowOf(Looper.getMainLooper()).idle()
+        val listener = org.mockito.ArgumentCaptor.forClass(androidx.media3.common.Player.Listener::class.java)
+        org.mockito.Mockito.verify(session).addListener(listener.capture())
+        // The call rings and holds it back, its screen comes up, it is answered.
+        org.mockito.Mockito.`when`(session.currentMediaItem)
+            .thenReturn(androidx.media3.common.MediaItem.Builder().setMediaId(olivia.name).build())
+        org.mockito.Mockito.`when`(session.playWhenReady).thenReturn(true)
+        org.mockito.Mockito.`when`(session.playbackSuppressionReason)
+            .thenReturn(androidx.media3.common.Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS)
+        listener.value.onEvents(
+            session,
+            androidx.media3.common.Player.Events(
+                androidx.media3.common.FlagSet.Builder()
+                    .add(androidx.media3.common.Player.EVENT_PLAYBACK_SUPPRESSION_REASON_CHANGED).build(),
+            ),
+        )
+        vm.screenResumed(false)
+        audio.mode = AudioManager.MODE_IN_CALL
+        shadowOf(Looper.getMainLooper()).idle()
+        // Raised for the call, past the quiet start.
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(600))
+        sensors.sendSensorEventToListeners(
+            org.robolectric.shadows.SensorEventBuilder.newBuilder(proximity, floatArrayOf(0f)).build(),
+        )
+        shadowOf(Looper.getMainLooper()).idle()
+        org.mockito.Mockito.verify(session).setAudioAttributes(
+            com.adiraimaji.amcallassistant.playback.SessionPlayer.attributes(com.adiraimaji.amcallassistant.playback.Output.EARPIECE),
+            false,
+        )
+    }
+
+    @Test fun aTakePausesARecordingPlaying() {
+        val session = org.mockito.Mockito.mock(androidx.media3.session.MediaController::class.java)
+        // As a session gives them: never null, the speaker's (SessionPlayer).
+        org.mockito.Mockito.`when`(session.audioAttributes).thenReturn(androidx.media3.common.AudioAttributes.DEFAULT)
+        val vm = viewModel(UiState(recordings = listOf(olivia)), connectSession = { Futures.immediateFuture(session) })
+        vm.play(olivia)
+        shadowOf(Looper.getMainLooper()).idle()
+        org.mockito.Mockito.verify(session).play()
+        org.mockito.Mockito.clearInvocations(session)
+        try {
+            vm.answer.startTake()
+            org.mockito.Mockito.verify(session).pause()
+        } finally {
+            Greeting.letGoOfAnyTake()
+        }
+    }
+
+    /** A pause is never refused: a voice app can hold the call's audio
+     *  mode with a recording still playing. */
+    @Test fun aPauseIsNotRefusedDuringACall() {
+        val vm = viewModel(UiState(recordings = listOf(olivia), playingName = olivia.name, playing = true, durationMs = 60_000))
+        listen(vm)
+        app.getSystemService(AudioManager::class.java).mode = AudioManager.MODE_IN_COMMUNICATION
+        vm.play(olivia)
+        assertEquals(emptyList<String>(), heard)
+        assertEquals(olivia.name, vm.state.value.playingName)
+    }
+
+    /** Another recording starts at its beginning, its length not known
+     *  yet, with its own waveform once worked out. */
+    @Test fun anotherRecordingStartsAtItsBeginningWithItsWaveform() {
+        // Worked out off the main thread, held until the moment after Play
+        // is read: done at once, it landed before play() returned - a
+        // withContext whose work is done before its caller suspends comes
+        // back without a dispatch - and the test failed on CI (2026-11-16).
+        val worked = java.util.concurrent.CountDownLatch(1)
+        Waveforms.override = { name ->
+            if (Looper.myLooper() != Looper.getMainLooper()) worked.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            Fixtures.waveform(name.hashCode().toLong())
+        }
+        val vm = viewModel(
+            UiState(
+                recordings = listOf(olivia, marcus), playingName = marcus.name, playing = true,
+                positionMs = 30_000, durationMs = 60_000, waveform = Fixtures.waveform(1),
+            ),
+        )
+        vm.play(olivia)
+        val s = vm.state.value
+        assertEquals(olivia.name, s.playingName)
+        assertFalse(s.playing)
+        assertEquals(0, s.positionMs)
+        assertEquals(0, s.durationMs)
+        assertNull("the old waveform gone at once", s.waveform)
+        worked.countDown()
+        settle(vm)
+        assertEquals(Fixtures.waveform(olivia.name.hashCode().toLong()), vm.state.value.waveform)
+    }
+
+    /** A session that cannot be reached: said, and the row folds back. */
+    @Test fun aSessionThatCannotBeReachedSaysSoAndStops() {
+        val vm = viewModel(
+            UiState(recordings = listOf(olivia)),
+            connectSession = { Futures.immediateFailedFuture(IllegalStateException("no session")) },
+        )
+        listen(vm)
+        vm.play(olivia)
+        shadowOf(Looper.getMainLooper()).idle()
+        settle(vm)
+        assertNull(vm.state.value.playingName)
+        assertEquals(listOf("Could not play that recording"), heard)
+    }
+
+    /** A seek moves the playhead at once, before the session says so; the
+     *  chevron stops and folds the row back. */
+    @Test fun aSeekMovesThePlayheadAndTheChevronStops() {
+        val vm = viewModel(
+            UiState(recordings = listOf(olivia), playingName = olivia.name, playing = true, positionMs = 1_000, durationMs = 60_000, waveform = Fixtures.waveform(2)),
+        )
+        vm.seekTo(42_000)
+        assertEquals(42_000, vm.state.value.positionMs)
+        vm.stopPlaying()
+        val s = vm.state.value
+        assertNull(s.playingName)
+        assertFalse(s.playing)
+        assertEquals(0, s.positionMs)
+        assertEquals(0, s.durationMs)
+        assertNull(s.waveform)
+    }
+
+    /** The playhead reads where the sound is from the player itself, and
+     *  only for the recording loaded (SoundPosition). */
+    @Test fun thePlayheadReadsTheSoundOfTheRecordingLoaded() {
+        val vm = viewModel(
+            UiState(recordings = listOf(olivia), playingName = olivia.name, playing = true, positionMs = 1_000, durationMs = 60_000),
+        )
+        SoundPosition.source = { name -> if (name == olivia.name) 7_777 else null }
+        try {
+            assertEquals(7_777, vm.positionNow())
+            vm.stopPlaying()
+            assertNull(vm.positionNow())
+        } finally {
+            SoundPosition.source = null
+        }
+    }
+
+    /** Playing, the time shown is where the sound is, from the player
+     *  itself; paused, the controller's - where the player paused, and a
+     *  seek asked for before the player has it (SoundPosition). */
+    @Test fun theTimeShownIsTheSoundsWhilePlayingAndTheControllersWhilePaused() {
+        val session = org.mockito.Mockito.mock(androidx.media3.session.MediaController::class.java)
+        org.mockito.Mockito.`when`(session.audioAttributes).thenReturn(androidx.media3.common.AudioAttributes.DEFAULT)
+        org.mockito.Mockito.`when`(session.currentMediaItem)
+            .thenReturn(androidx.media3.common.MediaItem.Builder().setMediaId(olivia.name).build())
+        org.mockito.Mockito.`when`(session.currentPosition).thenReturn(5_000L)
+        org.mockito.Mockito.`when`(session.duration).thenReturn(60_000L)
+        org.mockito.Mockito.`when`(session.isPlaying).thenReturn(true)
+        SoundPosition.source = { name -> if (name == olivia.name) 7_777 else null }
+        try {
+            val vm = viewModel(UiState(recordings = listOf(olivia)), connectSession = { Futures.immediateFuture(session) })
+            vm.play(olivia)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(7_777, vm.state.value.positionMs)
+            // Paused, the session says so.
+            val events = org.mockito.ArgumentCaptor.forClass(androidx.media3.common.Player.Listener::class.java)
+            org.mockito.Mockito.verify(session).addListener(events.capture())
+            org.mockito.Mockito.`when`(session.isPlaying).thenReturn(false)
+            events.value.onEvents(session, androidx.media3.common.Player.Events(androidx.media3.common.FlagSet.Builder().build()))
+            assertEquals(5_000, vm.state.value.positionMs)
+        } finally {
+            SoundPosition.source = null
+        }
+    }
+
+    /** Share's Original: at once, the file as it is, to Android's chooser,
+     *  readable by whoever it is shared with. */
+    @Test fun theOriginalIsSharedAtOnceAsItIs() {
+        val vm = viewModel(UiState(recordings = listOf(olivia)))
+        vm.share(olivia)
+        vm.shareOriginal(olivia)
+        assertNull(vm.state.value.shareChoice)
+        assertFalse(vm.state.value.converting)
+        val chooser: Intent = shadowOf(app).nextStartedActivity
+        assertEquals(Intent.ACTION_CHOOSER, chooser.action)
+        assertTrue(chooser.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+        @Suppress("DEPRECATION")
+        val send = chooser.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)!!
+        assertEquals(Intent.ACTION_SEND, send.action)
+        assertEquals("audio/ogg", send.type)
+        @Suppress("DEPRECATION")
+        assertEquals(olivia.uri, send.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
+        assertTrue(send.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+    }
+
+    /** The .m4a, cancelled at once: no sheet, nothing said. The conversion
+     *  held until cancelled: the real one fails at once on this made-up
+     *  recording, at times before shareUniversal returns (convertToM4a). */
+    @Test fun aConversionCancelledLeavesNothing() {
+        convertToM4a = { _, _, _, _, cancelled ->
+            val until = System.currentTimeMillis() + 10_000
+            while (!cancelled() && System.currentTimeMillis() < until) Thread.sleep(5)
+            false
+        }
+        val vm = viewModel(UiState(recordings = listOf(olivia)))
+        listen(vm)
+        vm.share(olivia)
+        vm.shareUniversal(olivia)
+        assertNull(vm.state.value.shareChoice)
+        assertTrue(vm.state.value.converting)
+        vm.cancelConversion()
+        assertFalse(vm.state.value.converting)
+        settle(vm)
+        assertNull(shadowOf(app).nextStartedActivity)
+        assertEquals(emptyList<String>(), heard)
+        assertEquals("", vm.state.value.log)
+    }
+
+    /** The log: newest first, each line stamped with its time in Latin
+     *  digits, cut to its last 8,000 characters. */
+    @Test fun theLogIsNewestFirstStampedAndCapped() {
+        Recordings.override = { emptyList() }
+        val vm = viewModel()
+        vm.onDeleteConsentResult(false)
+        settle(vm)
+        vm.startPairingNotification()
+        settle(vm)
+        val log = vm.state.value.log
+        val stamp = Regex("""^\[\d\d:\d\d:\d\d] check your notifications - you can type the code there\n\n\[\d\d:\d\d:\d\d] deletion cancelled\n\n$""")
+        assertTrue(log, stamp.matches(log))
+
+        repeat(150) {
+            vm.startPairingNotification()
+            settle(vm)
+        }
+        assertEquals(8_000, vm.state.value.log.length)
+        assertTrue(vm.state.value.log.startsWith("["))
+    }
+
+    /** What answers a tap on the answering machine is on the screen too, not
+     *  only in Diagnostics' log: "could not arm", "no test call came" and "a
+     *  call in the next three minutes may be answered with your greeting"
+     *  were in the log alone. */
+    @Test fun anAnsweringMachineMessageIsASnackbarToo() {
+        Recordings.override = { emptyList() }
+        val vm = viewModel()
+        listen(vm)
+        vm.answer.startTest(incoming = true)
+        awaitMain("a word") { heard.isNotEmpty() }
+        assertEquals(listOf("The recorder could not arm a test call"), heard.toList())
+        assertTrue(vm.state.value.log, vm.state.value.log.contains("] the recorder could not arm a test call"))
+    }
+
+    /** ...and its test call's ending, on its screen only: a watch runs on
+     *  while the user is elsewhere in AM Call Assistant, where it is logged alone. */
+    @Test fun aTestEndingIsASnackbarOnItsScreenOnly() {
+        Recordings.override = { emptyList() }
+        val recorder = FakeRecorder(RuntimeEnvironment.getApplication())
+        recorder.replies["XR"] = "RESULT 1 state=armed"
+        try {
+            for (screen in listOf(Screen.HOME, Screen.ANSWERING_MACHINE)) {
+                heard.clear()
+                AnswerDiagnostics.noteTestArmed(RuntimeEnvironment.getApplication(), true, System.currentTimeMillis() - 10 * 60_000L)
+                val vm = viewModel(UiState(screen = screen))
+                listen(vm)
+                vm.answer.opened()
+                awaitMain("the ending") { vm.state.value.log.contains("no test call came") }
+                assertEquals(screen.name, screen == Screen.ANSWERING_MACHINE, heard.any { "No test call came" in it })
+            }
+        } finally {
+            recorder.close()
+        }
+    }
+
+    /** The answering machine's screen left while a take records - here by a
+     *  plain tap's link - stops the take on the recorder. */
+    @Test fun leavingTheAnsweringMachineStopsATake() {
+        Recordings.override = { emptyList() }
+        val recorder = FakeRecorder(RuntimeEnvironment.getApplication())
+        recorder.replies["GR"] = "TAKE recording"
+        recorder.replies["GS"] = "TAKE 0"
+        try {
+            val vm = viewModel(UiState(screen = Screen.ANSWERING_MACHINE))
+            vm.answeringMachineOpened()
+            vm.answer.startTake()
+            awaitMain("recording") { vm.answer.state.value.recordingTake }
+            vm.open(com.adiraimaji.amcallassistant.DeepLink.Link(com.adiraimaji.amcallassistant.DeepLink.Kind.HOME, null))
+            awaitMain("stopped") { recorder.heard.any { it.key == "GS" } }
+            assertFalse(vm.answer.state.value.recordingTake)
+        } finally {
+            recorder.close()
+        }
+    }
+
+    /** A failure of something done just now goes in a snackbar too, its
+     *  first letter a capital; the log keeps it as said. */
+    @Test fun aFailureJustNowIsASnackbarToo() {
+        Recordings.override = { emptyList() }
+        val vm = viewModel()
+        listen(vm)
+        vm.addRuleContact(Uri.parse("content://com.android.contacts/contacts/404"))
+        settle(vm)
+        assertEquals(listOf("Could not add that contact"), heard)
+        assertTrue(vm.state.value.log, vm.state.value.log.contains("] could not add that contact"))
+    }
+}

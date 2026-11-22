@@ -1,0 +1,969 @@
+package com.adiraimaji.amcallassistant.setup
+
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import android.util.Log
+import androidx.core.content.edit
+import com.adiraimaji.amcallassistant.Prefs
+import com.adiraimaji.amcallassistant.adb.AdbIdentity
+import com.adiraimaji.amcallassistant.adb.AdbTransport
+import com.adiraimaji.amcallassistant.capture.AudioAccess
+import com.adiraimaji.amcallassistant.capture.CaptureDaemon
+import com.adiraimaji.amcallassistant.capture.DebugNotificationCleaner
+import com.adiraimaji.amcallassistant.capture.RecordingMode
+import com.adiraimaji.amcallassistant.recorder.BackgroundKill
+import com.adiraimaji.amcallassistant.recorder.KeepPaired
+import com.adiraimaji.amcallassistant.recorder.RecorderLifecycle
+import com.adiraimaji.amcallassistant.recorder.RecorderSwitch
+import com.adiraimaji.amcallassistant.recordings.RecordingStore
+import com.adiraimaji.amcallassistant.rethrowingCancellation
+import com.adiraimaji.amcallassistant.system.AutoStart
+import com.adiraimaji.amcallassistant.system.DeviceSkin
+import com.adiraimaji.amcallassistant.system.GlobalSettings
+import com.adiraimaji.amcallassistant.system.ShellGrant
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+
+/**
+ * What still has to happen before this phone can record a call.
+ *
+ * Setup needs no computer, which is the point of the whole design and worth
+ * saying out loud: the app pairs with the phone's own Wireless debugging, and
+ * then grants ITSELF the one privileged permission it needs by running
+ * `pm grant` over that session. Measured - the permission was revoked, the app
+ * was asked to grant it, and it came back granted=true.
+ *
+ * So the user's part is small: Developer options, two switches, a six-digit
+ * code. Everything after that is automatic.
+ */
+enum class SetupStep {
+    /** Working it out. */
+    CHECKING,
+
+    /** The runtime permissions setup needs - notifications, from Android 13 -
+     *  have not been granted yet. First, because without them nothing else is
+     *  worth doing: a recorder whose notification cannot show is invisible. */
+    NEEDS_PERMISSIONS,
+
+    /**
+     * The user has not yet been told what setup leaves switched on, or asked
+     * whether to hide Android's debugging notification.
+     *
+     * Asked BEFORE anything is turned on, so nobody flips a switch without
+     * knowing it stays flipped: USB and Wireless debugging stay on for as long
+     * as AM Call Assistant is installed, and AM Call Assistant turns them back on. That was nowhere
+     * in the app until a private security report pointed it out
+     * (GHSA-hf4v-7hwh-hx7w), along with the notification being hidden without
+     * asking.
+     *
+     * Also asked of installs set up before the question existed - they never
+     * got to answer it - which is why decide() puts it ahead of every READY.
+     * It does not stop anything recording: the daemon runs regardless of what
+     * screen is showing.
+     */
+    NEEDS_DEBUGGING_CHOICE,
+
+    /**
+     * The user has not yet been asked whether AM Call Assistant may keep its pairing:
+     * Android forgets a debugging pairing 7 days after it was made, and the
+     * recorder's next start is then refused until AM Call Assistant is paired again
+     * (KeepPaired). Turning that timeout off is what a switch in Developer
+     * options does on phones that show it, and it keeps a computer's approval
+     * too, so it is the user's to decide. Asked once, before pairing as the debugging question
+     * is - the recorder carries the answer out once it is up - and of installs
+     * set up before the question existed, as that one is. Skipped where the
+     * timeout is off already.
+     */
+    NEEDS_KEEP_PAIRED_CHOICE,
+
+    /**
+     * This phone has a vendor "App launch" / auto-start screen (Honor, Huawei,
+     * Xiaomi and the like), and the user has not yet been asked to let AM Call Assistant
+     * run in the background there.
+     *
+     * Measured on the Honor (2026-10-25): with App launch on "Manage
+     * automatically", unplugging from a computer and turning the screen off had
+     * the system KILL AM Call Assistant eight seconds later - mid-service, reason "OTHER
+     * KILLS BY SYSTEM", description iAwareR[SmartClean] - and then mark it
+     * stopped, which cancels its keep-alive job, so the recorder stayed down
+     * until the app was opened. On "Manage manually" the same test left it
+     * running and the recorder came back on its own in fifteen seconds.
+     *
+     * So this is the one setting that most decides whether recording survives
+     * in the field, and asking during setup is how it gets set before the first
+     * call rather than after the first lost one. Shown only where AutoStart has
+     * a screen to offer - never on a Pixel or the emulator - and asked once:
+     * AM Call Assistant cannot read the setting, so opening the screen or "Not now" is all
+     * there is to go on. Placed before the READY branches so an install set up
+     * before the question existed is asked too. It blocks nothing: skip it and
+     * the recorder still runs; if the system then kills AM Call Assistant, the warning
+     * built for that brings the ask back (see BackgroundKill).
+     */
+    NEEDS_BACKGROUND_CHOICE,
+
+    /** Developer options are off, so the Wireless debugging screen does not
+     *  exist to send anyone to. Its own step, because the intent that opens
+     *  Developer options silently does nothing while they are disabled - so
+     *  the button that was supposed to start setup appeared broken. */
+    NEEDS_DEVELOPER_OPTIONS,
+
+    /**
+     * Developer options are on but the app is not yet a trusted ADB peer, so
+     * the phone cannot be reached. ONE step covers the two hand-actions that
+     * get us there - turning Wireless debugging on and typing the pairing code
+     * - because both happen inside the Wireless debugging screen, and splitting
+     * them only sent the user back to the app in between for nothing. The
+     * card's switches step covers both debugging switches at once - both must
+     * be on, in any order - naming whichever is still off. USB debugging is
+     * what makes Wireless debugging stay on at all on this phone (see
+     * usbDebuggingOn).
+     */
+    NEEDS_PAIRING,
+
+    /**
+     * Paired once already - adbd trusts our key, and that trust survives reboots
+     * (until Android's pairing timeout, KeepPaired) - but there is no live session. Almost always because Wireless debugging
+     * is off (it drops on its own on some ROMs); occasionally a connect that has
+     * not caught yet. Either way the fix is "get Wireless debugging on and
+     * connect", NOT "pair again" - so it is its own step, with a much shorter
+     * card, instead of throwing a paired user back through the pairing flow.
+     */
+    NEEDS_CONNECTION,
+
+    /** Paired. Granting the permission and starting the recorder. */
+    FINISHING,
+
+    /** A call would be recorded right now. */
+    READY,
+}
+
+object Setup {
+
+    private const val TAG = "AMCallAssistant"
+    private const val KEY_COMPLETE = "setup_complete"
+    private const val KEY_PAIRED = "setup_paired"
+    private const val KEY_DEV_OPTIONS_CONFIRMED = "setup_dev_options_confirmed"
+    private const val KEY_BACKGROUND_ASKED = "setup_background_asked"
+    private const val PERMISSION = android.Manifest.permission.WRITE_SECURE_SETTINGS
+
+    fun hasSecureSettings(context: Context): Boolean =
+        context.checkSelfPermission(PERMISSION) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Whether the Wireless debugging screen exists to send anyone to.
+     *
+     * Where Android 17 hides the setting (see GlobalSettings), the app cannot
+     * see Developer options go on, and the step that asks for them would
+     * never end. Two ways out of it: Wireless debugging is still readable and
+     * cannot be on without Developer options, and the user can say they are
+     * on already (see [confirmDeveloperOptions]).
+     */
+    fun developerOptions(context: Context): GlobalSettings.Reading {
+        if (wirelessDebuggingOn(context)) return GlobalSettings.Reading.ON
+        val read = GlobalSettings.read(context, GlobalSettings.DEVELOPMENT_SETTINGS_ENABLED)
+        return if (read == GlobalSettings.Reading.UNKNOWN &&
+            Prefs.of(context).getBoolean(KEY_DEV_OPTIONS_CONFIRMED, false)
+        ) GlobalSettings.Reading.ON else read
+    }
+
+    fun developerOptionsOn(context: Context): Boolean =
+        developerOptions(context) == GlobalSettings.Reading.ON
+
+    /** The phone will not say whether Developer options are on, whatever the
+     *  user has told us - so the cards keep a way back for a wrong answer. */
+    fun developerOptionsHidden(context: Context): Boolean =
+        !wirelessDebuggingOn(context) &&
+            GlobalSettings.read(context, GlobalSettings.DEVELOPMENT_SETTINGS_ENABLED) ==
+            GlobalSettings.Reading.UNKNOWN
+
+    /** The user's word that Developer options are on, for a phone that will
+     *  not say. Taken from the Developer options card; dropped by reset(). */
+    fun confirmDeveloperOptions(context: Context) {
+        Log.i(TAG, "setup: Developer options are on, the user says")
+        Prefs.of(context).edit { putBoolean(KEY_DEV_OPTIONS_CONFIRMED, true) }
+    }
+
+    /**
+     * Setup has run all the way through at least once.
+     *
+     * Needed because the obvious test - "do we hold WRITE_SECURE_SETTINGS" -
+     * lies for the entire first session after setup. finish() takes that
+     * permission with `pm grant`, and a granted permission does not reach the
+     * process that asked for it until that process restarts, so
+     * checkSelfPermission keeps answering DENIED with the grant already in
+     * place. Gating "is this phone set up" on it therefore threw a freshly
+     * paired, freshly granted phone back to the first step of the wizard,
+     * which is precisely what it did.
+     *
+     * A flag written when finish() succeeds does not have that problem.
+     *
+     * NOTHING ELSE IS ACCEPTED AS PROOF, and both obvious substitutes were
+     * tried and are wrong:
+     *
+     * Holding WRITE_SECURE_SETTINGS is not proof. It survives `pm clear` and
+     * it survives the app's own Start fresh - reset() says so in as many words,
+     * because an app cannot hand back a development permission. Treating it as
+     * "setup happened" therefore declared a wiped phone ready.
+     *
+     * Owning a keypair is not proof either, though the name says otherwise.
+     * AdbTransport builds one with AdbIdentity.getOrCreate() the first time it
+     * so much as ATTEMPTS a connection, so the file appears on a phone that has
+     * never paired with anything. Measured: cleared the app's data, opened it,
+     * and found a certificate, a private key, and a setup screen claiming the
+     * phone was ready to record.
+     *
+     * Installs that were set up before this flag existed are migrated where it
+     * can be proven rather than assumed - see currentStep(), which writes the
+     * flag when it finds a recorder actually running.
+     */
+    fun isComplete(context: Context): Boolean =
+        Prefs.of(context)
+            .getBoolean(KEY_COMPLETE, false)
+
+    internal fun markComplete(context: Context) {
+        Prefs.of(context)
+            .edit { putBoolean(KEY_COMPLETE, true) }
+    }
+
+    /**
+     * Whether the user has been asked, once, to let AM Call Assistant run in the
+     * background on a phone whose vendor restricts that (see
+     * NEEDS_BACKGROUND_CHOICE). Only an answer is recorded, not what the
+     * setting is: AM Call Assistant cannot read "App launch", so opening that screen and
+     * "Not now" both count as asked. A phone with no such screen never needs asking, so
+     * the gate pairs this with AutoStart.available.
+     */
+    fun backgroundChoiceMade(context: Context): Boolean =
+        Prefs.of(context).getBoolean(KEY_BACKGROUND_ASKED, false)
+
+    fun markBackgroundChoice(context: Context) {
+        Prefs.of(context).edit { putBoolean(KEY_BACKGROUND_ASKED, true) }
+    }
+
+    /**
+     * Pairing has succeeded at least once, so adbd trusts our key.
+     *
+     * Recorded the instant pair() returns - BEFORE the connect that may fail -
+     * so that a connect which does not catch (Wireless debugging dropped, mDNS
+     * late) is treated as "come back and finish", never "pair again". The trust
+     * itself lives in adbd and outlives this flag; the flag only exists so the
+     * wizard can tell a paired phone that merely needs a session from one that
+     * has never paired at all, and show the right, shorter card.
+     *
+     * Distinct from isComplete: pairing is the halfway point, finish() is the
+     * end. A phone can be paired and not complete - which is exactly the state
+     * this was added to rescue.
+     */
+    fun hasPaired(context: Context): Boolean =
+        Prefs.of(context)
+            .getBoolean(KEY_PAIRED, false)
+
+    internal fun markPaired(context: Context) {
+        Prefs.of(context)
+            .edit { putBoolean(KEY_PAIRED, true) }
+    }
+
+    /**
+     * Pair again, from the recorder-down alert: the phone advertises Wireless
+     * debugging and turns this app away, which is what a forgotten pairing
+     * looks like (see RecorderHealth).
+     *
+     * Only the two flags that make decide() call the phone set up and paired.
+     * Nothing is revoked or switched off, unlike reset(): if the guess was
+     * wrong and the pairing is fine, decide() connects on the next look, lands
+     * on FINISHING and puts both flags back without the user typing a code.
+     * If it was right, the wizard opens on the pairing step.
+     */
+    fun forgetPairing(context: Context) {
+        Log.i(TAG, "setup: pairing again at the user's request")
+        Prefs.of(context).edit {
+            remove(KEY_COMPLETE)
+            remove(KEY_PAIRED)
+        }
+    }
+
+    /**
+     * The permissions setup cannot proceed without, which the user taps
+     * "Allow" for.
+     *
+     * POST_NOTIFICATIONS, from Android 13: it is what lets the per-call
+     * notification, the start-of-call prompt and the pairing code box show at
+     * all - and a call recorder whose notification is silently hidden is
+     * worse than useless. Only where it exists: below Android 13 the platform
+     * does not define it, checkSelfPermission answers DENIED for a permission
+     * it has never heard of, and the wizard would sit on its first step for
+     * ever on a minSdk phone - Android 12 - with nothing there to grant.
+     *
+     * READ_PHONE_STATE WAS HERE, AND WAS NEVER USED. It was for the app's own
+     * TelephonyCallback, from when the app watched calls itself. The daemon
+     * has watched them as shell for a while now and no code in the app read
+     * the phone state - yet every user was still asked to allow it, under a
+     * sentence saying it let AM Call Assistant notice calls. Asking for a permission is
+     * a claim about what the app does, and this one was false.
+     *
+     * Not requested anywhere else, which is exactly the bug a genuine fresh
+     * install turned up: every earlier test had them granted over adb.
+     */
+    val RUNTIME_PERMISSIONS: Array<String> = buildList {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }.toTypedArray()
+
+    /**
+     * Everything worth asking for, asked in one breath at the start.
+     *
+     * Audio access is NOT in RUNTIME_PERMISSIONS and must not be: setup is
+     * blocked until the two above are granted, and being unable to list
+     * recordings from a previous install is no reason to refuse to record new
+     * ones. But leaving it out of the ASKING was its own mistake - it surfaced
+     * as a permission request sitting on the main screen the moment setup
+     * finished, which is the one moment a person has earned the right to be
+     * finished. Asked here, it costs one more tap in a place already about
+     * tapping Allow; refused here, nothing breaks and the recordings list
+     * still offers it later.
+     */
+    val ASK_PERMISSIONS = RUNTIME_PERMISSIONS + AudioAccess.PERMISSIONS
+
+    fun missingRuntimePermissions(context: Context): List<String> =
+        RUNTIME_PERMISSIONS.filter {
+            context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+
+    fun wirelessDebuggingOn(context: Context): Boolean =
+        GlobalSettings.isOn(context, GlobalSettings.ADB_WIFI_ENABLED)
+
+    /**
+     * USB debugging - and on this phone it is NOT optional for first setup.
+     *
+     * Wireless debugging's Settings toggle only STICKS when USB debugging is
+     * already on. AdbService keeps adbd alive only while USB or Wireless
+     * debugging is enabled; with USB off, the first transient Wireless-off tears
+     * adbd - and its TLS connect server - down. What that looked like from the
+     * outside: Wireless debugging came on just long enough for the pairing
+     * dialog, pair() succeeded every single time (three AM Call Assistant keys ended up
+     * under Paired devices from three attempts), and then the setting was 0 by
+     * the time the connect ran, so there was never anything to reach. Setup was
+     * stuck in a loop.
+     *
+     * Proven on the device: with USB debugging on, Honor's real toggle logged
+     * `setAdbEnabled(true), mIsAdbUsbEnabled=true`, adbd started its wireless
+     * server immediately, and the setting held at 1 under sampling. Writing the
+     * setting directly over adb had always "stuck" for the same reason - USB
+     * debugging was on whenever adb was in use - which is what hid this.
+     *
+     * The app already depends on adb_enabled=1 as its off-Wi-Fi shield, but
+     * finish() set it AFTER the first connect that itself needs it. So step 2
+     * has the user turn it on first - it is the row right above Wireless
+     * debugging - and this is what lets the card show that line only while it
+     * is still off. With no cable plugged in it does nothing, and "Always
+     * prompt when connecting to USB" stays on, so a computer would still have
+     * to be authorised.
+     *
+     * ONE MORE TWIST, from the first real fresh-install run: switched on from
+     * the toggle with no cable attached, USB debugging turned ITSELF off again
+     * shortly after - and the connect failed exactly as before, twice. Enabling
+     * it a SECOND time, with Wireless debugging already on, held, and the
+     * connect landed - and the steps prescribed that order for a while. A
+     * later run needed several attempts in that order too: the toggles simply
+     * do not hold reliably on this phone, in either order. So the steps no
+     * longer prescribe one - both on, any order - and the real fix is
+     * PairingService: after the code it watches both switches, says which is
+     * off, and connects the moment both are on. The reason for the auto-off
+     * was found on 2026-10-26 with the log enlarged: the Honor's own Settings
+     * app writes adb_enabled=0 each time the Developer options screen is
+     * shown without a cable - opened, come back to, or unlocked onto (see
+     * UsbDebuggingWatch).
+     *
+     * UNKNOWN where Android 17 hides it (see GlobalSettings). Nothing may wait
+     * on it then: it would wait for ever.
+     */
+    fun usbDebugging(context: Context): GlobalSettings.Reading =
+        GlobalSettings.read(context, GlobalSettings.ADB_ENABLED)
+
+    /**
+     * About phone, where Build number is, for turning Developer options on.
+     *
+     * A different destination from the plain-Settings openSettings() on purpose:
+     * this jumps straight to About phone, where Build number is tapped to enable
+     * Developer options. ACTION_DEVICE_INFO_SETTINGS is not blocked the way the
+     * Developer-options deep-link is, so it opens for a new, unplugged user.
+     */
+    fun openAboutPhone(context: Context) {
+        runCatching {
+            context.startActivity(
+                Intent(Settings.ACTION_DEVICE_INFO_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }.onFailure {
+            runCatching {
+                context.startActivity(
+                    Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        }
+    }
+
+    /**
+     * Open plain Settings - NOT a direct link to Developer options.
+     *
+     * ACTION_APPLICATION_DEVELOPMENT_SETTINGS, the intent that jumps straight to
+     * Developer options, is silently swallowed on this Honor ROM for an app that
+     * is not adb-connected: it neither opens a screen nor throws, so even the
+     * runCatching fallback never fired and the button just did nothing - exactly
+     * when a new user, unplugged, needs it. Ordinary Settings opens fine (About
+     * phone above is proof), so this lands there and the steps walk the user to
+     * Wireless debugging from Settings' own search.
+     */
+    fun openSettings(context: Context) {
+        runCatching {
+            context.startActivity(
+                Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+    }
+
+    /**
+     * Everything currentStep() asks the world, behind one interface.
+     *
+     * The decision below has had more regressions than any other function in
+     * the app - each block of it is a comment about one, and every one of
+     * them was found on a phone. With the questions behind this interface
+     * the decision itself runs on the JVM against a fake, and each of those
+     * regressions is a test (SetupStepTest) against decide(). The live answers are in
+     * LiveProbe; the decision does not know which it is talking to.
+     */
+    internal interface Probe {
+        fun missingPermissions(): Boolean
+        fun debuggingChoiceMade(): Boolean
+        fun keepPairedChoiceNeeded(): Boolean
+        fun needsBackgroundChoice(): Boolean
+        fun recorderOn(): Boolean
+        fun isComplete(): Boolean
+        fun markComplete()
+        fun hasIdentity(): Boolean
+        suspend fun daemonRunning(): Boolean
+        suspend fun retireDaemon()
+        fun adbConnected(): Boolean
+        suspend fun connect()
+        fun wirelessDebuggingOn(): Boolean
+        fun developerOptionsOn(): Boolean
+        fun hasPaired(): Boolean
+    }
+
+    private class LiveProbe(private val context: Context) : Probe {
+        override fun missingPermissions() = missingRuntimePermissions(context).isNotEmpty()
+        override fun debuggingChoiceMade() = DebugNotificationCleaner.asked(context)
+        override fun keepPairedChoiceNeeded() = KeepPaired.needsChoice(context)
+        // The preference first: once answered, no walk of the vendor screens
+        // (a package-manager call each) at every return to the app.
+        override fun needsBackgroundChoice() =
+            !backgroundChoiceMade(context) && AutoStart.available(context)
+        override fun recorderOn() = RecorderSwitch.isOn(context)
+        override fun isComplete() = Setup.isComplete(context)
+        override fun markComplete() = Setup.markComplete(context)
+        override fun hasIdentity() = AdbIdentity.exists(context)
+        override suspend fun daemonRunning() = CaptureDaemon.isRunningConfirmed(context)
+        override suspend fun retireDaemon() {
+            CaptureDaemon.quit(context)
+        }
+        override fun adbConnected() = AdbTransport.isConnected
+        override suspend fun connect() {
+            AdbTransport.autoConnect(context, timeoutMs = 4_000)
+        }
+        override fun wirelessDebuggingOn() = Setup.wirelessDebuggingOn(context)
+        override fun developerOptionsOn() = Setup.developerOptionsOn(context)
+        override fun hasPaired() = Setup.hasPaired(context)
+    }
+
+    /**
+     * Where setup currently stands.
+     *
+     * Tries to connect first, because a previous pairing is remembered by adbd
+     * and needs no code - so "already set up" must not be mistaken for "needs
+     * pairing" just because this process is new.
+     */
+    /** Off the main thread: the probes read settings, ping the recorder,
+     *  and ask the ADB library, whose lock a connect can hold for seconds. */
+    suspend fun currentStep(context: Context): SetupStep =
+        withContext(Dispatchers.IO) { decide(LiveProbe(context)) }
+
+    internal suspend fun decide(world: Probe): SetupStep {
+        // Asked first. The rest of setup is pointless without these, and
+        // finding out at the end would mean pairing before discovering the app
+        // cannot see calls. Only until setup is done: refused after it - in
+        // Android's settings, or taken back by Android from an app left
+        // unused - they put AM Call Assistant back here until 1.2, recordings, Settings
+        // and Off out of reach while the recorder went on recording. Now home
+        // says what is off and how to turn it back on (NotificationHealth),
+        // as Android's guide asks: "gracefully degrade your app".
+        if (world.missingPermissions() && !world.isComplete()) {
+            return SetupStep.NEEDS_PERMISSIONS
+        }
+
+        // Before every READY below, so an install from before the question
+        // existed is asked too. See NEEDS_DEBUGGING_CHOICE.
+        if (!world.debuggingChoiceMade()) {
+            return SetupStep.NEEDS_DEBUGGING_CHOICE
+        }
+
+        // The same, for keeping the pairing. See NEEDS_KEEP_PAIRED_CHOICE.
+        if (world.keepPairedChoiceNeeded()) {
+            return SetupStep.NEEDS_KEEP_PAIRED_CHOICE
+        }
+
+        // Also before the READY branches, and for the same migration reason,
+        // but only where there is a vendor screen to send the user to -
+        // needsBackgroundChoice folds in AutoStart.available, so this is skipped
+        // outright on a phone with no such restriction. Asked once; it blocks
+        // nothing. See NEEDS_BACKGROUND_CHOICE.
+        if (world.needsBackgroundChoice()) {
+            return SetupStep.NEEDS_BACKGROUND_CHOICE
+        }
+
+        // SWITCHED OFF IS NOT "NOT SET UP".
+        //
+        // With the recorder stopped on purpose, every check below would fail in
+        // turn and land the user in the pairing wizard - for a phone they had
+        // set up perfectly well and then chosen to switch off. The completion
+        // flag is what says setup has happened; the switch says whether it is
+        // running. It was the keypair here, and a keypair is not proof - see
+        // isComplete - so a phone that had never finished setup, with the
+        // switch off, was called ready.
+        if (!world.recorderOn() && world.isComplete()) {
+            return SetupStep.READY
+        }
+
+        // THE RECORDER RUNNING IS WHAT "SET UP" MEANS. Asked before anything
+        // about ADB, and that order is the whole point of the architecture.
+        //
+        // ADB is a bootstrap, not a runtime dependency: once the daemon is up
+        // it serves loopback and needs no adbd, no mDNS and no Wi-Fi. So a
+        // phone with the recorder running is READY even with no ADB session at
+        // all - which is the normal state away from Wi-Fi.
+        //
+        // Getting this backwards showed a fully working app the setup wizard,
+        // asking the user to turn on Wireless debugging while it was quietly
+        // recording calls perfectly well. Alarming, and wrong.
+        if (world.daemonRunning()) {
+            // ...AND IT IS OURS, because the check is an authenticated ping:
+            // only a daemon started with this install's token answers it.
+            //
+            // The daemon runs as shell in its own session, so it survives the
+            // app being uninstalled. Install AM Call Assistant again within a few minutes
+            // and there it is on the port, from the version that was removed.
+            // That one does not know the new token, so it fails this check and
+            // ensureRunning() retires it over ADB when setup gets that far -
+            // rather than the wizard calling the phone set up and handing the
+            // user an app recording through code they thought they had
+            // deleted.
+            //
+            // What CAN answer without a keypair is our own daemon after a
+            // Start fresh that failed to stop it: the token outlives the
+            // identity. That one is ours to retire, and this is the place.
+            if (world.hasIdentity()) {
+                // A recorder that is up and answering is the proof the flag
+                // wants, so installs from before it existed get it here rather
+                // than being sent back through a wizard they finished long ago.
+                world.markComplete()
+                return SetupStep.READY
+            }
+            Log.i(TAG, "setup: found our recorder with no identity to go with it, retiring it")
+            world.retireDaemon()
+        }
+
+        // A RECORDER THAT IS MERELY DOWN IS NOT AN UNCONFIGURED PHONE.
+        //
+        // The same rule as the switch above, for the same reason. Every check
+        // past this point is about ADB, and ADB is deliberately turned off
+        // between calls - so a phone whose daemon happened to be down answered
+        // "needs Wireless debugging" and was shown step 2 of the setup wizard,
+        // days after setup finished. Reported as the app starting "very
+        // inconsistently": the home screen, a stopped recorder, or the wizard,
+        // decided by nothing but whether the daemon was up at that instant.
+        //
+        // Both facts are required. A keypair says pairing happened; the granted
+        // permission says setup FINISHED, since finish() is the only thing that
+        // grants it - and it is also exactly what revive() needs to re-arm
+        // Wireless debugging on its own. Being able to repair this without the
+        // user is what makes it not their problem. Bringing the daemon back is
+        // the keep-alive job's business, which recheckSetup() has already
+        // kicked, and the home screen says whether the recorder is running.
+        if (world.hasIdentity() && world.isComplete()) {
+            Log.i(TAG, "setup: set up, recorder down - leaving it to the keep-alive")
+            return SetupStep.READY
+        }
+
+        // Only worth attempting once Wireless debugging is on: adb over the
+        // network has nothing to connect to otherwise, so trying just burns the
+        // whole timeout. On the Developer-options step - Wireless debugging still
+        // off - that was a four-second dead wait on every return from Settings,
+        // during which the screen sat on the old step with its button greyed and
+        // then jumped. With it gone, the auto-advance to the next step is instant.
+        if (!world.adbConnected() && world.wirelessDebuggingOn()) {
+            world.connect()
+        }
+
+        if (!world.adbConnected()) {
+            // Developer options is the one gate that keeps its own step: enabling
+            // it is a distinct ritual (Build number, seven taps) in a different
+            // corner of Settings. Everything after it - turning Wireless
+            // debugging on, then pairing - is one screen and one step. The
+            // pairing card shows the "turn it on" lines while Wireless debugging
+            // is still off, and drops them the moment it is on.
+            return if (!world.developerOptionsOn()) {
+                SetupStep.NEEDS_DEVELOPER_OPTIONS
+            } else if (world.hasPaired()) {
+                // Trust already exists in adbd's keystore and survives reboots
+                // (a lost one comes back as refusals, and RecorderHealth sends
+                // home to the pairing step), so there is nothing to pair again - only a session to open,
+                // which needs Wireless debugging on. Routing a paired phone back
+                // through the pairing card is exactly what left setup going in
+                // circles when Wireless debugging dropped after a good pairing.
+                SetupStep.NEEDS_CONNECTION
+            } else {
+                SetupStep.NEEDS_PAIRING
+            }
+        }
+
+        // Connected but no recorder yet: finish the job.
+        return SetupStep.FINISHING
+    }
+
+    /**
+     * The automatic half: take the permission, then start the recorder.
+     *
+     * Granting requires the app to be restarted before the permission takes
+     * effect in this process, which is why the UI reports it as something that
+     * happened rather than pretending it is instantly usable.
+     *
+     * A cancellation is thrown on, not given back as a failure: the pairing
+     * notification's service, stopped at Android's cap for it in this step,
+     * said "Paired, but the recorder did not start" over its own timed-out
+     * words (read from the code, 2026-11-14).
+     */
+    suspend fun finish(context: Context): Result<Unit> = runCatching {
+        if (!hasSecureSettings(context)) {
+            // Without it, nothing turns Wireless debugging back on after a
+            // restart, and the recorder never comes back - so setup is not
+            // done. OPPO, OnePlus, realme and Xiaomi phones refuse it until
+            // a switch of their own is on (ShellGrant). Read back, as the
+            // grant can say nothing and give nothing.
+            val pkg = context.packageName
+            val (grant, readBack) = if (ShellGrant.actAsRefused) {
+                ShellGrant.REFUSAL to null
+            } else {
+                // Not run at all - the session gone - is said as that, not
+                // blamed on a switch.
+                val ran = AdbTransport.exec(ShellGrant.grantCommand(pkg, PERMISSION)).getOrElse {
+                    val why = it.message ?: it.javaClass.simpleName
+                    error(
+                        "AM Call Assistant lost its connection to this phone ($why). Check that Wireless " +
+                            "debugging is still on, then tap Try again.",
+                    )
+                }
+                ran to AdbTransport.exec(ShellGrant.readBackCommand(pkg, PERMISSION)).getOrNull()
+            }
+            val outcome = ShellGrant.outcome(pkg, PERMISSION, grant, readBack)
+            // Two lines: a refusal's stack trace runs to twenty.
+            Log.i(TAG, "setup: grant -> $outcome (${grant.lines().take(2).joinToString(" | ")})")
+            if (outcome != ShellGrant.Outcome.GRANTED) {
+                val property = if (ShellGrant.actAsRefused) "true"
+                else AdbTransport.exec("getprop ${ShellGrant.MONITORING_PROPERTY}").getOrNull()
+                Log.i(TAG, "setup: ${ShellGrant.MONITORING_PROPERTY}=[${property?.trim()}]")
+                error(ShellGrant.advice(outcome, DeviceSkin.current(), ShellGrant.monitoring(property)))
+            }
+        }
+
+        // Granted the same way and at the same moment as the permission above,
+        // over the ADB shell rather than through a Settings switch a side-loaded
+        // app cannot reach - but only if the user said yes to hiding the
+        // "Wireless debugging connected" banner. Withdrawn otherwise, so the
+        // phone's own Notification access list never shows AM Call Assistant reading
+        // notifications it was told to leave alone.
+        val hide = DebugNotificationCleaner.hiding(context)
+        val notif = AdbTransport.exec(
+            DebugNotificationCleaner.accessCommand(context, allow = hide) + " && echo done"
+        ).getOrElse { "failed: ${it.message}" }
+        Log.i(TAG, "setup: notif listener (${if (hide) "allow" else "disallow"}) -> $notif")
+
+        // Re-assert the off-Wi-Fi shield, over the same ADB session (the app's
+        // own WRITE_SECURE_SETTINGS is not live until this process restarts, so
+        // it cannot set it directly yet). With USB debugging enabled, losing
+        // Wi-Fi stops the Wireless server but no longer restarts adbd - so the
+        // daemon keeps recording in the field, away from any network. See
+        // CaptureDaemon.revive for the mechanism and the on-device proof.
+        //
+        // "Re-assert", because the user now turns this on in step 2, before
+        // pairing: on this phone the FIRST connect needs it too (see
+        // usbDebuggingOn), so it could not wait until here. Idempotent.
+        val shield = RecorderLifecycle.shieldOverAdb()
+        Log.i(TAG, "setup: off-Wi-Fi shield -> $shield")
+
+        CaptureDaemon.ensureRunning(context).getOrThrow()
+        // Keep AM Call Assistant paired, asked before pairing, to the recorder just
+        // started: nothing else sends it until the app is next opened, and a
+        // user who never opens it again would lose the pairing it was meant
+        // to keep (the 1.1 review).
+        KeepPaired.carryOut(context)
+        // Recorded before standing down, because from here on this phone IS
+        // set up - and the permission that would otherwise say so is not
+        // readable in this process until it restarts.
+        markComplete(context)
+        // Through the door; put it back.
+        CaptureDaemon.standDown(context)
+    }.rethrowingCancellation()
+
+    /** Why grantNotificationAccess could not grant it. */
+    enum class GrantProblem {
+        /** No recorder answered - none up, one before 0.31, one that took too
+         *  long - and no ADB session could do it either. */
+        NO_ANSWER,
+
+        /** Asked, as the shell, and Android did not allow it. */
+        REFUSED,
+    }
+
+    /** An ADB session's steps, for the grant over one (grantOver):
+     *  AdbTransport's, or a test's. */
+    internal interface GrantSession {
+        val open: Boolean
+        suspend fun connect(): Boolean
+        suspend fun exec(command: String): Result<String>
+        suspend fun close()
+    }
+
+    /**
+     * [command] run over a session: what its shell printed, or null with no
+     * session or one that broke - an exec that failed is no word from
+     * Android. Opened and closed here unless one was open already; a
+     * connect that failed leaves nothing to close, as before 0.31. Once
+     * begun it runs to its end, as a revive does: Show who called runs in
+     * the screen's scope, and the screen closed from Recents meanwhile
+     * would cut it between a connect that came up and the close, and leave
+     * the session open. Its steps are bounded - the connect's own limits
+     * (mDNS's five seconds, libadb's ten a try), the command's watchdog
+     * (watched).
+     */
+    internal suspend fun grantOver(session: GrantSession, command: String): String? = withContext(NonCancellable) {
+        val opened = !session.open
+        if (opened && !session.connect()) return@withContext null
+        try {
+            session.exec("$command && echo granted")
+                .onFailure { Log.w(TAG, "settings: notif listener over the session failed: ${it.message}") }
+                .getOrNull()
+        } finally {
+            if (opened) session.close()
+        }
+    }
+
+    /**
+     * The grant over an ADB session, where no recorder answers (grantOver
+     * over AdbTransport). A seam: the tests' reaches no adbd - one on
+     * 127.0.0.1:5555 is an emulator's during the release's checks.
+     */
+    internal var grantOverSession: suspend (Context) -> String? = { context ->
+        grantOver(
+            object : GrantSession {
+                override val open get() = AdbTransport.isConnected
+                override suspend fun connect() = AdbTransport.autoConnect(context, timeoutMs = 5_000).isSuccess
+                override suspend fun exec(command: String) = AdbTransport.exec(command)
+                override suspend fun close() {
+                    AdbTransport.close()
+                }
+            },
+            DebugNotificationCleaner.accessCommand(context, allow = true),
+        )
+    }
+
+    /**
+     * Grant notification access after setup, for a yes given in Settings:
+     * null once granted, or why not. finish() does it during setup, over its
+     * own session. Afterwards the recorder does it - the shell, as a session
+     * is - with no session at all. This opened one, which needs Wireless
+     * debugging on, and LineageOS switches that off by itself a second after
+     * a revive's session has started the recorder: on the OnePlus, on Wi-Fi,
+     * Show who called said "it needs Wi-Fi" (2026-11-12; Hide the debugging
+     * notification goes the same way, read from the code). A session's is
+     * still the way where no recorder answers (grantOverSession); not after
+     * the recorder said no: a session's shell would be told the same.
+     * Whatever either said, this process's own word decides, read from
+     * Android at the end: the list the recorder reads is written a moment
+     * after the grant, a reply can be lost after the grant was made, and
+     * `cmd` ends well after an exception too. Once begun it runs to its end:
+     * Show who called runs in the screen's scope, and the screen closed from
+     * Recents meanwhile would drop the answer of a grant Android made, and
+     * leave the switch off over it.
+     */
+    suspend fun grantNotificationAccess(context: Context): GrantProblem? = withContext(NonCancellable) {
+        val recorderSaid = CaptureDaemon.allowListener(context)
+        val tried = if (recorderSaid != null) {
+            Log.i(
+                TAG,
+                if (recorderSaid) "settings: notif listener -> the recorder said ok"
+                else "settings: notif listener -> the recorder said failed",
+            )
+            GrantProblem.REFUSED
+        } else {
+            val out = grantOverSession(context)
+            Log.i(TAG, "settings: notif listener over a session -> ${out ?: "no session, or it broke"}")
+            if (out == null) GrantProblem.NO_ANSWER else GrantProblem.REFUSED
+        }
+        val granted = DebugNotificationCleaner.accessGranted(context)
+        Log.i(TAG, "settings: notif listener granted: $granted")
+        if (granted) null else tried
+    }
+
+    /**
+     * Put the app back to the state a fresh install is in.
+     *
+     * The test is not "some things were cleared", it is that the setup wizard
+     * runs again from its FIRST step. Setup asks for three things, so a reset
+     * that deserves the name has to undo all three:
+     *
+     *   1. every runtime permission it asks -> revoked here (HANDED_BACK)
+     *   2. Wireless debugging being on      -> turned off here
+     *   3. the pairing                      -> keypair discarded here
+     *
+     * Undoing only the third, which is what this did before, left the wizard
+     * starting at step 3 - which is a re-pair, not a fresh start.
+     *
+     * And what Keep AM Call Assistant paired changed, which a fresh install has not:
+     * Android's pairing timeout, put back by the recorder before it quits
+     * (RecorderLifecycle.endForReset).
+     *
+     * ORDER IS FORCED. Stopping the daemon needs the ADB session; turning
+     * Wireless debugging off destroys it. Revoking the permissions kills this
+     * process, so it has to be last, and everything before it has to be on
+     * disk by then.
+     *
+     * WHAT IT DELIBERATELY DOES NOT DO: touch the recordings. They are the one
+     * thing here that cannot be recreated, they are recordings of the user's
+     * phone calls, and a button called "Start fresh" must not be a way to lose
+     * them. Deleting one stays a separate, per-recording, confirmed action.
+     *
+     * WHAT IT CANNOT DO, and the UI says so:
+     *
+     * WRITE_SECURE_SETTINGS stays granted. An app may revoke its own RUNTIME
+     * permissions; this one is a development permission, granted over `pm
+     * grant`, and there is no self-revoke for those. Doing it over ADB would
+     * work but kills the process the moment it lands, halfway through the
+     * reset and before Wireless debugging could be turned off - and turning
+     * Wireless debugging off first destroys the session needed to send it.
+     * Genuinely either/or, and turning the debugging off is worth more: it is
+     * the part the user can see, and the leftover permission unlocks nothing
+     * until they pair again.
+     *
+     * The phone also keeps trusting the old key - for good with Keep AM Call Assistant
+     * paired, which this puts back first, else until Android's pairing
+     * timeout (KeepPaired). That list lives in /data/misc/adb, which is root's. What changes is that this app no longer
+     * holds the key, so it must pair again - amnesia rather than revocation.
+     *
+     * Uninstalling remains the only true zero, and that is fine: it is one tap
+     * away and it is what it is for.
+     */
+    suspend fun reset(context: Context): Result<Unit> = withContext(NonCancellable) { resetSteps(context) }
+
+    /**
+     * [reset]'s steps, all of them once begun: Start fresh runs from the
+     * screen, whose scope ends when AM Call Assistant is closed from Recents, and it
+     * waits for the recorder's lock - behind a revive, for tens of seconds -
+     * after the pairing key is forgotten. Cut there, it left setup marked
+     * complete and Developer options hidden if AM Call Assistant hid them
+     * (StartFreshTest), and - read from the code - this process, whose ADB
+     * library keeps the forgotten key, alive to pair again in.
+     */
+    private suspend fun resetSteps(context: Context): Result<Unit> = runCatching {
+        // Android's pairing timeout put back if Keep AM Call Assistant paired turned it
+        // off, the recorder quit, its service stopped, Start without Wi-Fi's
+        // port closed, the session and the pairing key gone: under the
+        // recorder's lock, all of it.
+        RecorderLifecycle.endForReset(context)
+
+        RecordingStore.clearTree(context)
+        RecordingMode.set(context, RecordingMode.AUTOMATIC)
+        // Setup asks again; until then the banner is back and nothing hides it.
+        DebugNotificationCleaner.forget(context)
+        // Setup asks the background question again, so no old warning about it.
+        BackgroundKill.forget(context)
+        // Nor what was said, or put away, of the Battery setting and of
+        // notifications: set up again, they are said again (review, 2026-11-18).
+        com.adiraimaji.amcallassistant.system.BatteryHealth.forgetAll(context)
+        com.adiraimaji.amcallassistant.calls.NotificationHealth.forget(context)
+        // When AM Call Assistant is off back to its default, and Developer options back
+        // if it hid them: setup's second step goes there.
+        RecorderLifecycle.forgetDebugging(context)
+        // Or the very next launch reads a flag from the setup being undone.
+        Prefs.of(context).edit {
+            remove(KEY_COMPLETE)
+            remove(KEY_PAIRED)
+            remove(KEY_DEV_OPTIONS_CONFIRMED)
+            remove(KEY_BACKGROUND_ASKED)
+        }
+
+        if (hasSecureSettings(context) &&
+            RecorderLifecycle.writeOutsideRevive(context, GlobalSettings.ADB_WIFI_ENABLED, false)
+        ) {
+            Log.i(TAG, "reset: Wireless debugging turned off")
+        }
+
+        // Ends this process: the permissions are handed back on its end. Where
+        // nothing is handed back, it is ended all the same - the ADB library
+        // keeps the old key for the whole process, and pairing again in it
+        // would present the forgotten one.
+        if (!revokeRuntimePermissions(context)) {
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                { android.os.Process.killProcess(android.os.Process.myPid()) },
+                RESET_EXIT_DELAY_MS,
+            )
+        }
+        Log.i(TAG, "reset: done, setup starts again from step 1")
+    }
+
+    /**
+     * Every runtime permission AM Call Assistant asks for, wherever it asks: setup's
+     * notifications and audio files, and the call log and contacts asked for
+     * from home, Settings and Whose calls. Start fresh hands back all of them
+     * - it said it did, and until 1.2 handed back the notifications alone,
+     * the list it read having been setup's (RUNTIME_PERMISSIONS) since
+     * READ_PHONE_STATE went from it.
+     */
+    internal val HANDED_BACK: List<String> =
+        (RUNTIME_PERMISSIONS.toList() + com.adiraimaji.amcallassistant.calls.CallLogLookup.PERMISSIONS + com.adiraimaji.amcallassistant.capture.AudioAccess.PERMISSIONS).distinct()
+
+    /** Of [HANDED_BACK], those [granted] says the app holds. Pure. */
+    internal fun toHandBack(granted: (String) -> Boolean): List<String> = HANDED_BACK.filter(granted)
+
+    /**
+     * Hand back the permissions the user granted, so setup asks for them again.
+     *
+     * This kills the app, which is the documented behaviour and not a side
+     * effect to work around: a process cannot keep running with permissions it
+     * has just given up. The system does it "once it is safe", meaning once the
+     * app is no longer in front of the user - which is why the caller closes
+     * the activity rather than leaving it sitting there looking unchanged.
+     * Whether the process will be ended for it (permissions handed back on
+     * its end).
+     */
+    private fun revokeRuntimePermissions(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            // Below Android 13 there is no way for an app to hand a runtime
+            // permission back. Everything else in the reset still applies.
+            Log.w(TAG, "reset: cannot revoke permissions before Android 13")
+            return false
+        }
+        val granted = toHandBack { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+        if (granted.isEmpty()) return false
+        return runCatching { context.revokeSelfPermissionsOnKill(granted) }
+            .onFailure { Log.w(TAG, "reset: could not revoke permissions", it) }
+            .isSuccess
+    }
+
+    /** Long enough for the screen to close first. */
+    private const val RESET_EXIT_DELAY_MS = 1_500L
+}

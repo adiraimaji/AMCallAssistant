@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AM Call Assistant · How it works</title>
+<meta name="description" content="How AM Call Assistant records both sides of a call without root: the phone is its own ADB host, and a recorder running as the shell does the rest.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="icon.png">
+<script>(function(){try{var v=localStorage.getItem('amcallassistant-theme');if(v&&v!=='system')document.documentElement.setAttribute('data-theme',v);var l=localStorage.getItem('amcallassistant-look');if(l==='deck'||l==='multitrack')document.documentElement.setAttribute('data-look',l);}catch(e){}})();</script>
+<link rel="stylesheet" href="amcallassistant.css">
+<script src="amcallassistant.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <div class="column">
+    <a class="brand" href="index.html"><img src="icon.png" alt="" width="34" height="34">AM Call Assistant</a>
+    <div class="bar-end">
+      <nav><a href="index.html" class="roomy">Home</a><a href="setup.html">Setup</a><a href="privacy-policy.html" class="roomy">Privacy</a><a class="roomy" href="https://github.com/adiraimaji/AMCallAssistant">GitHub</a></nav>
+      <a class="support-btn" href="https://donatello.to/adiraimaji" aria-label="Support AM Call Assistant on Donatello"><span aria-hidden="true">&#9829;</span><span class="support-name">Support</span></a>
+      <button class="look" type="button" aria-label="Look">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3 2 8l10 5 10-5-10-5Z"/><path d="m2 12 10 5 10-5"/><path d="m2 16 10 5 10-5"/>
+        </svg><span class="look-name">Memo</span>
+      </button><button class="theme" type="button" aria-label="Theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" aria-hidden="true">
+          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>
+        </svg><span class="theme-name">System</span>
+      </button>
+    </div>
+  </div>
+</header>
+<main>
+
+  <h1>How AM Call Assistant works</h1>
+  <p class="lead">Android&rsquo;s <code>voice-call</code> audio source carries both sides of a
+     call, and reading it needs permissions no ordinary app can hold &mdash; but
+     the shell user, the one an ADB session runs as, holds them. Getting shell
+     privilege normally means a computer, or root, or a second app you keep
+     alive. AM Call Assistant needs none of them, because the phone can be its own
+     computer.</p>
+
+  <div class="how-box solo">
+    <svg class="diagram" viewBox="0 0 540 430" role="img" aria-labelledby="dg-title">
+    <title id="dg-title">The app pairs with the phone&rsquo;s own Wireless debugging,
+      which starts a recorder running as the shell; the recorder writes each
+      call to a file, and the app collects it.</title>
+    <defs><marker id="dg-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+      markerWidth="7" markerHeight="7" orient="auto"><path class="dg-head" d="M0 0L10 5L0 10z"/></marker>
+      <marker id="dg-arrow-lit" viewBox="0 0 10 10" refX="9" refY="5"
+      markerWidth="7" markerHeight="7" orient="auto"><path class="dg-head lit" d="M0 0L10 5L0 10z"/></marker></defs>
+    <rect class="dg-phone" x="6" y="6" width="528" height="418" rx="40"/>
+    <text class="dg-sub" x="270" y="46">Your phone &mdash; nothing leaves it</text>
+    <text class="dg-sub" x="270" y="216">all over</text>
+    <text class="dg-sub" x="270" y="238">127.0.0.1</text>
+    <g class="dg-step" data-step="1"><rect class="dg-node key" x="28" y="78" width="196" height="78" rx="16"/><text class="dg-title" x="126" y="112">AM Call Assistant app</text><text class="dg-sub" x="126" y="136">pairs, then collects</text>
+      <path class="dg-line" d="M224 117H311" marker-end="url(#dg-arrow)"/><circle class="dg-num" cx="266" cy="117" r="14"/><text class="dg-num-text" x="266" y="117">1</text>
+      <text class="dg-label" x="266" y="152" text-anchor="middle">pairs</text></g>
+    <g class="dg-step" data-step="2"><rect class="dg-node " x="316" y="78" width="196" height="78" rx="16"/><text class="dg-title" x="414" y="112">Wireless debugging</text><text class="dg-sub" x="414" y="136">Android&rsquo;s own</text>
+      <path class="dg-line" d="M414 156V295" marker-end="url(#dg-arrow)"/><circle class="dg-num" cx="414" cy="226" r="14"/><text class="dg-num-text" x="414" y="226">2</text>
+      <text class="dg-label" x="436" y="231">starts it</text></g>
+    <g class="dg-step" data-step="3"><rect class="dg-node " x="316" y="300" width="196" height="78" rx="16"/><text class="dg-title" x="414" y="334">Recorder</text><text class="dg-sub" x="414" y="358">runs as the shell</text>
+      <path class="dg-line" d="M316 339H229" marker-end="url(#dg-arrow)"/><circle class="dg-num" cx="272" cy="339" r="14"/><text class="dg-num-text" x="272" y="339">3</text>
+      <text class="dg-label" x="272" y="374" text-anchor="middle">records</text></g>
+    <g class="dg-step" data-step="4"><rect class="dg-node file" x="28" y="300" width="196" height="78" rx="16"/><text class="dg-title" x="126" y="334">Recording</text><text class="dg-sub" x="126" y="358">an Opus file</text>
+      <path class="dg-line" d="M126 300V161" marker-end="url(#dg-arrow)"/><circle class="dg-num" cx="126" cy="230" r="14"/><text class="dg-num-text" x="126" y="230">4</text>
+      <text class="dg-label" x="148" y="235">collects</text></g>
+  </svg>
+    <ol class="numbered">
+        <li data-step="1"><strong>The app pairs with the phone&rsquo;s own Wireless debugging</strong> &mdash; the same pairing a laptop does, with both ends on the same handset.</li>
+        <li data-step="2"><strong>For a few seconds, it uses that session to start a small recorder</strong> that runs as the shell, then closes it. The recorder outlives the session.</li>
+        <li data-step="3"><strong>The recorder watches the calls and writes each one to a file</strong> itself, so a phone that freezes background apps cannot cut a recording short.</li>
+        <li data-step="4"><strong>The app collects the finished file</strong> over a socket on which the recorder and the app each prove who they are.</li>
+      </ol>
+  </div>
+  <p class="muted">The whole design, with the measurement behind each decision,
+     is in <a href="https://github.com/adiraimaji/AMCallAssistant/blob/main/docs/ARCHITECTURE.md">ARCHITECTURE.md</a>.</p>
+
+  <h2 id="design">The design</h2>
+
+  <h3>The phone is both ADB host and ADB device</h3>
+  <p>The app embeds an ADB client and pairs, over <code>127.0.0.1</code>, with
+     the phone&rsquo;s own Wireless debugging &mdash; the same six-digit pairing a
+     laptop does, with both ends on the same handset. Nothing the recorder does
+     leaves the phone; the app's one other request is the update check to GitHub.</p>
+
+  <h3>ADB is a bootstrap, not a transport</h3>
+  <p>That session lasts seconds. In it the app grants itself one settings
+     permission and launches a small daemon from a jar it carries inside the APK,
+     then closes the session. A process started from an ADB shell outlives the
+     connection, which is the whole trick: with Wi-Fi off there is no ADB at all,
+     so anything that needed it when a call arrived would simply not record.</p>
+
+  <h3>The daemon records; the app collects</h3>
+  <p>The daemon watches the call state and writes the call to a file. The app is
+     never on the audio path. That split was forced by measurement: when the app
+     handled live audio, the phone&rsquo;s process manager froze it while the
+     dialer was in front and a 76.7-second call arrived as 14 to 44 seconds.
+     Afterwards the app fetches the finished file at whatever pace the system
+     allows, and a freeze there costs a slower copy rather than a lost
+     second.</p>
+  <figure class="chart"><p class="chart-title">Why the recorder writes the file, not the app</p><div class="tl-row"><span class="tl-label">A 76.7-second call, the app carrying its audio</span><div class="tl-track"><span class="seg talk" style="left: 0.00%; width: 17.50%">arrived</span><span class="seg range" style="left: 17.50%; width: 37.50%">sometimes</span><span class="seg lost" style="left: 55.00%; width: 40.88%">lost</span></div></div><div class="tl-row"><span class="tl-label">The recorder writing the file, as it does now</span><div class="tl-track"><span class="seg ok" style="left: 0.00%; width: 95.88%">the whole call</span></div></div><div class="tl-axis" aria-hidden="true"><span style="left: 0.00%">0</span><span style="left: 25.00%">20</span><span style="left: 50.00%">40</span><span style="left: 75.00%">60</span><span style="left: 100.00%">80 s</span></div><figcaption>The phone froze the app while the dialer was in front, and the end of every call went with it. The recorder runs as the shell, which the phone does not freeze.<span class="src">Honor Magic 8 Pro, before 2026-09-10 &middot; ARCHITECTURE.md, The daemon records; the app collects</span></figcaption></figure>
+
+  <h3>The socket is authenticated both ways</h3>
+  <p>The daemon listens on loopback, which every process on the phone shares, so
+     each connection proves itself with an HMAC exchange over a token that never
+     crosses the socket. The daemon proves itself first &mdash; anything can bind
+     that port while the daemon is down, and a scheme that sent the token as a
+     password would hand it over.</p>
+
+  <h3>It keeps itself alive</h3>
+  <p>Losing Wi-Fi restarts the ADB daemon and kills what it spawned, so the
+     recorder keeps one debugging switch on to survive it, and minds that switch
+     itself. That is what lets a call be recorded in a field with no network.
+     Some phones switch it off themselves &mdash; an Honor&rsquo;s Settings app
+     does each time Developer options opens &mdash; and the app is woken the
+     moment that happens, to switch it back on.</p>
+  <p>A reboot is one thing it cannot survive, because starting the recorder
+     is the single operation that needs ADB. A scheduled job and a system-held
+     Wi-Fi watcher rebuild it without you within seconds of the phone joining a
+     network &mdash; when the phone lets the app start in the background at boot
+     to arm them. Where it does not, nothing is armed and nothing begins, which
+     is why the manual says to open the app once after a restart. Android may
+     also take its time getting to the app: five minutes on a Galaxy S20 left
+     locked. Once it is running, the app says plainly that it cannot record
+     rather than looking healthy, and after two minutes a notification says it
+     too.</p>
+  <p>Unplugging the phone from a computer is the other. Measured on an Honor:
+     three seconds after the cable came out, the phone stopped the ADB daemon,
+     the recorder went with it, and nothing started the ADB daemon again. So the
+     recorder watches the USB port and spends those three seconds waking the
+     app, which switches Wireless debugging off and on &mdash; what has Android
+     start the ADB daemon &mdash; and starts the recorder: recording again 12 to
+     16 seconds after the cable came out, nothing tapped. With the screen off
+     that needs the app allowed to start by itself: left to the phone, an
+     Honor froze it until it was woken &mdash; about four minutes, once 8.5
+     &mdash; and AM Call Assistant says so the moment it may run again, with a button to
+     the setting. On a Galaxy S20 it is plugging in that restarts the ADB
+     daemon, and the same watch has the recorder back 15 to 20 seconds later. A
+     charger stops nothing.</p>
+  <figure class="chart"><p class="chart-title">Unplugged from a computer, back by itself</p><div class="tl-row"><span class="tl-label">Screen on</span><div class="tl-track"><span class="seg ok" style="left: 0.00%; width: 15.00%"></span><span class="seg down" style="left: 15.00%; width: 45.00%">not recording</span><span class="seg ok" style="left: 60.00%; width: 40.00%">12 s</span></div></div><div class="tl-row"><span class="tl-label">Screen on, again</span><div class="tl-track"><span class="seg ok" style="left: 0.00%; width: 15.00%"></span><span class="seg down" style="left: 15.00%; width: 65.00%">not recording</span><span class="seg ok" style="left: 80.00%; width: 20.00%">16 s</span></div></div><div class="tl-row"><span class="tl-label">Screen off, on Manage manually</span><div class="tl-track"><span class="seg ok" style="left: 0.00%; width: 15.00%"></span><span class="seg down" style="left: 15.00%; width: 50.00%">not recording</span><span class="seg ok" style="left: 65.00%; width: 35.00%">13 s</span></div></div><div class="tl-axis" aria-hidden="true"><span style="left: 0.00%">0</span><span style="left: 15.00%">3</span><span style="left: 50.00%">10</span><span style="left: 100.00%">20 s</span></div><figcaption>Three seconds after the cable comes out Android stops its ADB daemon, and the recorder goes with it. AM Call Assistant, woken in those seconds, starts it again over Wi-Fi with nothing tapped.<span class="src">Honor Magic 8 Pro, Android 17, October 2026 &middot; ARCHITECTURE.md, Unplugged from a computer</span></figcaption></figure>
+  <p>Some phones also stop apps in the background to save power, and a stopped
+     AM Call Assistant cannot start the recorder again once it goes. AM Call Assistant cannot change
+     that setting, so setup asks you to, on the phone&rsquo;s own screen for
+     it; if the phone stops AM Call Assistant anyway &mdash; while it was working, or
+     leaving it stopped &mdash; a notification says so. Android&rsquo;s routine
+     clean-up of an idle app is not counted: on an Honor, 2,015 of 2,062 such
+     records were that, and none had left the app stopped.</p>
+  <p>Android&rsquo;s own Battery setting for an app can hold AM Call Assistant back on any
+     phone. Set to <em>Restricted</em>, Android lets nothing of AM Call Assistant&rsquo;s run
+     in the background: none of its jobs runs there, so a recorder that stops
+     may stay stopped until something starts AM Call Assistant &mdash; you opening it, or
+     Android for a reason of its own. With exact call tracking off, a call is saved only when
+     you next open AM Call Assistant &mdash; a messenger call most likely too, though that
+     is not measured &mdash; and in Ask first it is not recorded at all.
+     Auto-delete and the trash&rsquo;s 30 days wait for it as well. AM Call Assistant says so, on its home screen and
+     once in a notification, with a button to App info, where it is
+     changed.</p>
+
+  <h2 id="what-it-does">What it does</h2>
+
+  <h3>WhatsApp, Telegram, Viber and Google Meet calls too</h3>
+  <p>Messenger calls and Google Meet, both sides, each app switched on separately &mdash; and
+     the caller&rsquo;s name, if you let AM Call Assistant read the app&rsquo;s call
+     notification. Tested with WhatsApp, Telegram, Viber and Google Meet; Signal takes the
+     same path and is not tested yet. Android allows this from version 14; on
+     an older one, Settings says so.</p>
+
+  <h3>An answering machine, if you want one</h3>
+  <p>Off until you switch it on. It answers a call you have not taken, plays
+     your own greeting with your microphone muted, and keeps the caller&rsquo;s
+     message. No app can play sound into a call, so the recorder does it, as the
+     shell, through an output Android calls in-call music &mdash; or, for a call
+     that goes through the phone&rsquo;s mixer, as Wi-Fi Calling does on a
+     Galaxy S23, Android&rsquo;s call-screening route. Android&rsquo;s own
+     answer on whether a phone can do that was wrong on the Honor, so a test
+     call, not a guess, says whether it works on yours.</p>
+
+  <h3>It tells you when something is wrong</h3>
+  <p>A recorder that fails quietly is found out on the day a call was needed. So
+     after each call a silent notification shows the recording, with Play, Share
+     and Delete; every recording is measured once it is saved, and one that came
+     out silent is reported; a recorder that is down says why, with
+     <strong>Pair again</strong> when the pairing is gone and
+     <strong>Allow this Wi-Fi</strong> when Android has not allowed the network;
+     a recording that stops before its call ends says so during the call and
+     goes on once it can, a gap in it; a recorder that was itself ended is
+     started again, and the call then has two recordings; one that never came
+     back is said after the call, with how much was missed, where AM Call Assistant can
+     tell; a call, or a part of one, that could not be saved says
+     why; a folder you chose that can no longer be reached is said, and the
+     call saved in the standard one; cards above the recordings say what
+     stands in the way - notifications off, battery use Restricted; and with
+     call log access, an answered call that has no recording is reported
+     once.</p>
+
+  <h3>Every call, recorded or not</h3>
+  <p>A Calls tab shows the phone's call log with a play mark on each recorded
+     call, and, on one that was not recorded, why: recording was off, it was too
+     short, it is in Recently deleted, or &mdash; in red &mdash; the answering
+     machine could not take a message, or nothing explains it.</p>
+
+  <h3>Cut to the call</h3>
+  <p>A recording starts when the call is answered, not when you dial: no
+     ringing at the start, and a call nobody picked up is not kept. With call
+     waiting, each call gets a recording of its own. Android tells AM Call Assistant when
+     each call is answered; tracking only listens. The one thing that ever
+     answers a call is the answering machine, when you switch it on.</p>
+  <figure class="chart"><p class="chart-title">Exact call tracking keeps only the conversation</p><div class="tl-row"><span class="tl-label">The call</span><div class="tl-track"><span class="seg ring" style="left: 0.00%; width: 75.00%">ringing, 45 s</span><span class="seg talk" style="left: 75.00%; width: 23.33%">talk</span></div></div><div class="tl-row"><span class="tl-label">The recording</span><div class="tl-track"><span class="seg none" style="left: 0.00%; width: 75.00%">not saved</span><span class="seg talk" style="left: 75.00%; width: 23.33%">14 s</span></div></div><div class="tl-axis" aria-hidden="true"><span style="left: 0.00%">0</span><span style="left: 25.00%">15</span><span style="left: 50.00%">30</span><span style="left: 75.00%">45</span><span style="left: 100.00%">60 s</span></div><figcaption>Cut to Android&rsquo;s own answer and end, to a twentieth of a second. A call nobody answers is not saved at all.<span class="src">Honor Magic 8 Pro, Android 17, October 2026 (0.14) &middot; ARCHITECTURE.md, Exact call tracking</span></figcaption></figure>
+
+  <h3>Only the calls you want</h3>
+  <p>Keep every call, only your contacts&rsquo;, only strangers&rsquo;, or
+     everyone&rsquo;s but a few people&rsquo;s. Name files by date, or with the
+     caller or their number in them &mdash; and on an Honor, the way
+     Honor&rsquo;s own Phone app looks for them, so its call history gets a
+     play button.</p>
+
+  <h3>Nothing is deleted by accident</h3>
+  <p>Delete moves a recording to Recently deleted, where it can be restored for
+     30 days, one by one or all at once, unless you empty it first. Auto-delete, off until you choose it, removes recordings past an
+     age you pick and calls too short to have been a conversation, into the same
+     place. A bookmark marks a recording to keep, and nothing removes a kept one.
+     A Quick Settings tile turns recording on and off without opening the
+     app, and a long press on it opens the app.</p>
+
+  <h3>Off, and debugging with it, for banking apps</h3>
+  <p>Some banking apps won&rsquo;t open while Developer options or debugging is
+     on. Turning AM Call Assistant off can hide Developer options and Wireless debugging
+     too &mdash; the recorder keeps running on USB debugging, so it is back
+     the moment AM Call Assistant is on &mdash; or switch all debugging off, the recorder
+     with it, so that turning it on needs Wi-Fi. Turning it on puts back what it
+     switched off. Settings &rarr; When AM Call Assistant is off.</p>
+  <p><em>Start without Wi-Fi</em>, off until you switch it on, takes that Wi-Fi
+     away until the phone restarts. Android allows Wireless debugging only on a
+     Wi-Fi network the phone has joined, but adbd has another way in, its
+     classic port, 5555, which listens with no network at all; AM Call Assistant asks adbd
+     to open it, once each boot, over Wireless debugging. The cost is that the
+     port is open on every network the phone joins whenever USB debugging is
+     on &mdash; while AM Call Assistant is on, and while it is off unless all debugging goes
+     with it &mdash; and announced there by the phone&rsquo;s serial number: a
+     computer that reaches it, or an app on the phone, cannot debug the phone
+     without a yes on it, but it can ask.</p>
+
+  <h2 id="permissions">What it asks for, and what it does not</h2>
+  <p>No microphone permission. The app never records &mdash; the shell-side
+     process does the capturing, your answering-machine greeting included
+     &mdash; and a call recorder that asks
+     for the microphone anyway is asking for something it does not use. Reading
+     your call log and contacts is optional, offered once, and is used for two
+     things only: labelling a recording with who the call was with, and noticing
+     a call that went unrecorded. Knowing when a call is answered takes one more
+     permission, one Android does not let apps ask for: AM Call Assistant&rsquo;s recorder
+     allows it, and turning off Exact call tracking in Settings takes it
+     back.</p>
+  <p>Every permission, in the order F-Droid&rsquo;s listing page shows them,
+     because a permission a call recorder does not explain is one its user has
+     to guess at:</p>
+  <table>
+    <tr><th>Permission</th><th>Why</th></tr>
+    <tr><td><code>INTERNET</code></td><td>Not about the internet: Android requires it for any TCP socket, including one to <code>127.0.0.1</code>.</td></tr>
+    <tr><td><code>ACCESS_NETWORK_STATE</code></td><td>To tell whether there is Wi-Fi to rebuild the recorder over, instead of trying and failing - and for the background checks to ask Android for a network to run with (from Android 14 a job that asks for one needs it).</td></tr>
+    <tr><td><code>WRITE_SECURE_SETTINGS</code></td><td>Granted by the app to itself over its own ADB session. Nothing but a shell can grant it, so no user can be talked into it. It lets AM Call Assistant switch debugging back on when the phone turns it off, and off with AM Call Assistant when you ask it to.</td></tr>
+    <tr><td><code>POST_NOTIFICATIONS</code></td><td>The recording notice, the ask-first prompt, the pairing code box.</td></tr>
+    <tr><td><code>FOREGROUND_SERVICE</code>, <code>FOREGROUND_SERVICE_SPECIAL_USE</code></td><td>To stay alive while a call is being recorded and while the finished file is collected; while the recorder is restarted after a computer's cable comes out; and for the seconds it takes to warn that the phone stopped AM Call Assistant in the background. <code>SPECIAL_USE</code> is the honest type: the microphone type would need a microphone permission this app does not hold.</td></tr>
+    <tr><td><code>FOREGROUND_SERVICE_MEDIA_PLAYBACK</code></td><td>To play a recording on with the screen off, under the phone's media controls. It plays; it never records.</td></tr>
+    <tr><td><code>RECEIVE_BOOT_COMPLETED</code></td><td>A reboot kills the recorder; this is what arms the job that rebuilds it.</td></tr>
+    <tr><td><code>READ_MEDIA_AUDIO</code></td><td>To list recordings made before a reinstall. Refusing it only hides those.</td></tr>
+    <tr><td><code>READ_EXTERNAL_STORAGE</code></td><td>Android 12 only, which has no <code>READ_MEDIA_AUDIO</code>: the same, to list recordings made before a reinstall. It covers photos and videos too; AM Call Assistant reads only its own folder. Refusing it only hides those.</td></tr>
+    <tr><td><code>READ_CALL_LOG</code>, <code>READ_CONTACTS</code></td><td>Optional. The only way to know who a call was with: to label a recording, to name a file after the caller or their number, to keep or leave out a call by who it was with, and, for the call log, to notice a call that went unrecorded.</td></tr>
+    <tr><td><code>MANAGE_ONGOING_CALLS</code></td><td>For exact call tracking. Not one an app can ask for: the daemon allows it, as the shell, while the switch is on. Android then tells AM Call Assistant when each call is answered and ends. Tracking acts on a call in one case only: it hangs up the answering machine&rsquo;s call if the recorder is lost mid-message. The machine&rsquo;s answering is the recorder&rsquo;s, as the shell.</td></tr>
+    <tr><td><code>USE_FULL_SCREEN_INTENT</code></td><td>Keeps Ask first's question on screen during a call until you answer it; without it, a minute. Given at install; if you turn it off in Android's settings, the question still waits in the shade, and in Ask first home says what it costs.</td></tr>
+    <tr><td><code>WAKE_LOCK</code></td><td>So the keep-alive job can finish its few seconds of work, and so a phone with its screen off stays awake while it brings the recorder back after a USB cable, a minute and a half at most. WorkManager declares it too. And for the lock a phone app holds in a call, which darkens the screen while you hold the phone to your ear to listen to a recording; the proximity sensor it goes by needs no permission, and is read only while AM Call Assistant plays a recording on its screen, while a call holds one back, and, once the phone is at your ear, until you take it down.</td></tr>
+  </table>
+
+  <div class="note">
+    <p><strong>Recording calls is your responsibility.</strong> Consent law
+       differs by country and sometimes by state: one party, all parties, or a
+       spoken notice. This app records what you tell it to and warns nobody on
+       your behalf.</p>
+  </div>
+
+  <h2>Will it work on your phone?</h2>
+  <p>One thing cannot be worked around: whether your phone&rsquo;s audio hardware
+     hands over the call at all. Some give both sides, some give one, some give
+     silence. AM Call Assistant answers it in about a second &mdash; Settings, Diagnostics,
+     <strong>Self-test</strong> &mdash; by opening a real capture down the same
+     path a call takes and telling you what came out.</p>
+  <p class="muted">Both sides of the call have been recorded on five phones,
+     across three very different Android builds: an Honor Magic&nbsp;8 Pro on
+     MagicOS&nbsp;10, a Samsung Galaxy&nbsp;S20, a Galaxy&nbsp;S23 and a
+     Galaxy&nbsp;M34 on One&nbsp;UI &mdash; the S23 and the M34 over Wi-Fi
+     Calling too &mdash; and a OnePlus on LineageOS&nbsp;23. Five is not a
+     compatibility list, which is what the self-test is for.</p>
+  <p class="muted">OPPO, OnePlus and realme phones on their own systems
+     (ColorOS, OxygenOS, realme UI) refuse AM Call Assistant the setting setup grants it
+     until a switch of their own is set: <em>Disable system
+     optimization</em> on, the last in Developer options&rsquo; Apps section
+     (<em>Disable permission monitoring</em> on older ones, or
+     <em>Permission monitoring</em> off). Setup names it before it is needed,
+     and again if the phone refuses.</p>
+
+</main>
+<footer>
+  <div class="column">
+    <nav>
+      <a href="how-it-works.html">How it works</a>
+      <a href="setup.html">Setup</a>
+      <a href="privacy-policy.html">Privacy policy</a>
+      <a href="https://github.com/adiraimaji/AMCallAssistant/releases">Releases</a>
+      <a href="https://github.com/adiraimaji/AMCallAssistant">Source on GitHub</a>
+      <a href="https://donatello.to/adiraimaji">Support AM Call Assistant</a>
+    </nav>
+    <p>AM Call Assistant is free software under the Apache&nbsp;2.0 licence.</p>
+    <p class="credit">The F-Droid logo is by William Theaker, Robert Martinez and
+       Andrew Nayenko, under
+       <a href="https://creativecommons.org/licenses/by-sa/3.0/">CC&nbsp;BY-SA&nbsp;3.0</a>.</p>
+  </div>
+</footer>
+<div class="viewer" hidden tabindex="-1" role="dialog" aria-modal="true"
+     aria-label="Screenshot">
+  <button class="vnav prev" type="button" aria-label="Previous">&lsaquo;</button>
+  <img alt="">
+  <button class="vnav next" type="button" aria-label="Next">&rsaquo;</button>
+  <span class="vcount"></span>
+</div>
+</body>
+</html>

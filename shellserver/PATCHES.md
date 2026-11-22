@@ -1,0 +1,143 @@
+# Patches against scrcpy
+
+Vendored from **scrcpy v4.1** (Apache-2.0), commit tagged `v4.1`, from
+`server/src/main/java/`. Package names are deliberately unchanged, so that a
+diff against upstream is a diff and not a translation.
+
+**23 files, 2,347 lines kept. 67 files, 9,660 lines dropped.**
+
+The brief estimated 32 files / ~3.9k lines. That estimate was right for a fork
+that keeps `Options`; dropping it, and then the `ServiceManager` facade, takes
+another 13 files out. Every change below exists to remove a dependency, not to
+change behaviour.
+
+## Files added
+
+| File | Why |
+|---|---|
+| `com/adiraimaji/amcallassistant/shell/Main.java` | Ours. Replaces `Server.java`: the start - the looper, the environment, the threads in their order. |
+| `com/adiraimaji/amcallassistant/shell/LoopbackServer.java` | Ours. The port on loopback, each connection on its own thread, who connects. |
+| `com/adiraimaji/amcallassistant/shell/Handshake.java` | Ours. The proof every command is sent with. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/Commands.java` | Ours. What each command does, and its reply. |
+| `com/adiraimaji/amcallassistant/shell/Wire.java` | Ours. The command bytes, the reply lines and the name frame. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/Calls.java` | Ours. The call and recording state, and what is done as a call starts and ends. |
+| `com/adiraimaji/amcallassistant/shell/CallDecisions.java` | Ours. When a call is recorded, asked about or left out, and what becomes of its recording. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/CallWatch.java` | Ours. The phone's call state as this process hears it, and the start of the watches. |
+| `com/adiraimaji/amcallassistant/shell/RecordingSession.java` | Ours. One call's recording, written to a file. |
+| `com/adiraimaji/amcallassistant/shell/Closing.java` | Ours. What is made over a file just opened, the file closed again if the making fails. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/Wakes.java` | Ours. Waking the app's service with `am`, in order. |
+| `com/adiraimaji/amcallassistant/shell/Reports.java` | Ours. The last call's report, kept for Copy a report. |
+| `com/adiraimaji/amcallassistant/shell/Platform.java` | Ours. Every hidden API the core reaches by reflection, and the services rebound to the shell's context. |
+| `com/adiraimaji/amcallassistant/shell/Hop.java` | Ours. A task handed to the main looper and waited for, and a call given a time limit. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/PolicyUse.java` | Ours. The messenger copy's audio policy and the captures reading through it. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/Answering.java` | Ours. The answering machine's place in the recorder: its settings, its player, the hop to the main looper. |
+| `com/adiraimaji/amcallassistant/shell/AnswerEffects.java` | Ours. What the answering machine does to the phone. |
+| `com/adiraimaji/amcallassistant/shell/AnswerTest.java` | Ours. The answering machine's test call. |
+| `com/adiraimaji/amcallassistant/shell/Custodian.java` | Ours. The recorder letting itself out when the app is uninstalled. |
+| `com/adiraimaji/amcallassistant/shell/Shield.java` | Ours. The off-Wi-Fi shield, USB debugging kept on, and the settings it writes. |
+| `com/adiraimaji/amcallassistant/shell/CableWatch.java` | Ours. A USB cable going in or out, passed on to the app. |
+| `com/adiraimaji/amcallassistant/shell/KillWatch.java` | Ours. The app killed in the background, told to it. |
+| `com/adiraimaji/amcallassistant/shell/Tracking.java` | Ours. Exact call tracking's permission. |
+| `com/adiraimaji/amcallassistant/shell/Listener.java` | Ours. Notification access for the app's listener, granted as the shell and read back. |
+| `com/adiraimaji/amcallassistant/shell/DebuggingOff.java` | Ours. "Turn all debugging off": the wait, then both switches. |
+| `com/adiraimaji/amcallassistant/shell/Shell.java` | Ours. Android's own tools run as children, and small helpers. |
+| `com/adiraimaji/amcallassistant/shell/Paths.java` | Ours. The recorder's files in `/data/local/tmp`. |
+| `com/adiraimaji/amcallassistant/shell/Voip.java` | Ours. Messenger calls: the audio policy that copies voice-call playback, spotting a call, and the microphone guard. |
+| `com/adiraimaji/amcallassistant/shell/CallStates.java` | Ours. Telephony's call events made into calls - which way each went and when it ended. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/Checks.java` | Ours. The daemon's small decisions - the app-op output and the notification listeners read back, who may connect - in plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/PhoneCapture.java` | Ours. A phone call's capture: the modem's voice path, and the messenger capture instead while the call plays through the mixer. |
+| `com/adiraimaji/amcallassistant/shell/LevelTap.java` | Ours. A call's capture passed on unchanged, with a look at each chunk: when the caller first made a sound, and whether the check tone came through. |
+| `com/adiraimaji/amcallassistant/shell/CallReport.java` | Ours. What Copy a report says about the last call recorded. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/AudioScene.java` | Ours. What is playing and capturing on the phone, read into a call's report. |
+| `com/adiraimaji/amcallassistant/shell/AnswerMachine.java` | Ours. The answering machine's decisions. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/AnswerSettings.java` | Ours. The answering machine's settings as the app sends them. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/Greeting.java` | Ours. The greeting, where it is kept, and recording a new one. |
+| `com/adiraimaji/amcallassistant/shell/GreetingPlayer.java` | Ours. Plays the greeting into the call. |
+| `com/adiraimaji/amcallassistant/shell/Forwarding.java` | Ours. The carrier's voicemail timer, read and lengthened for the answering machine. |
+| `com/adiraimaji/amcallassistant/shell/Nullable.java` | Ours. The daemon's own `@Nullable`, for NullAway. |
+| `com/adiraimaji/amcallassistant/shell/PairingTimeout.java` | Ours. Android's pairing timeout, turned off and put back for Keep AM Call Assistant paired. |
+| `com/adiraimaji/amcallassistant/shell/Quality.java` | Ours. The recording's bit rate: the app's choice, from the environment and the app's word. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/RestartPolicy.java` | Ours. When a failing capture is made anew, how long first, and when it is given up on. Plain Java, tested in `../tests`. |
+| `com/adiraimaji/amcallassistant/shell/Restarting.java` | Ours. A recording's capture, made anew when a read fails, as RestartPolicy says. |
+| `com/adiraimaji/amcallassistant/shell/RestartLoop.java` | Ours. Restarting's read loop, over captures it knows through an interface. Plain Java, tested in `../tests`. |
+| `android/content/IContentProvider.java` | Copied verbatim from upstream's tree. A 5-line stub for a hidden interface, so `javac` can name the type. |
+| `com/genymobile/scrcpy/BuildConfig.java` | Generated by `build.sh`, exactly as upstream's `build_without_gradle.sh` does. `util.IO` guards one assertion with `BuildConfig.DEBUG`. |
+
+## Files modified
+
+Three files. Each modification is marked `PATCHED:` at the site.
+
+### `audio/AudioEncoder.java`
+
+Constructor took an `Options`; now takes the three values it read out of it.
+
+```java
+- public AudioEncoder(AudioCapture capture, Streamer streamer, Options options)
++ public AudioEncoder(AudioCapture capture, Streamer streamer, int bitRate,
++                     List<CodecOption> codecOptions, String encoderName)
+```
+
+`Options` is 707 lines of command-line parsing that also references the video,
+camera, display and orientation types. Keeping it to supply three fields would
+have dragged roughly half of scrcpy back in, to parse a command line this fork
+does not have.
+
+Three `LogUtils.buildAudioEncoderListMessage()` calls were dropped from error
+messages. `LogUtils` is 299 lines reaching into `Device`, `DisplayInfo`,
+`VideoCodec`, `DeviceApp` and `DisplayManager` to build a listing. Two of the
+three sites are unreachable here anyway, since this fork always passes a null
+`encoderName`.
+
+### `wrappers/ServiceManager.java`
+
+Reduced from nine service getters to one, `getActivityManager()`.
+
+The audio path uses `ActivityManager` in exactly two places: the foreground
+workaround in `AudioDirectCapture` (`startActivity`, `forceStopPackage`) and
+`FakeContext.getContentProviderExternal`. Every other getter was reachable only
+from video, control or display code that is not here. Keeping them would have
+pulled in `WindowManager`, `DisplayManager`, `InputManager`, `PowerManager`,
+`StatusBarManager`, `ClipboardManager`, `ContentProvider`, `SurfaceControl` and
+`DisplayControl` - about 1,300 lines, none of it ever executed.
+
+### `wrappers/ActivityManager.java`
+
+`createSettingsProvider()` removed. It was the only reference to the
+`ContentProvider` wrapper, and its only upstream caller was `util.Settings`.
+This fork does not touch settings. `getContentProviderExternal()` is kept,
+because `FakeContext` uses it.
+
+## Things that were NOT changed, and are worth knowing
+
+**`device/Streamer.java` is untouched.** It wants a `FileDescriptor`, which
+upstream comes from `DesktopConnection`'s `LocalSocket`. `Main` gets an
+equivalent one from a TCP socket with `ParcelFileDescriptor.fromSocket()`, so
+the wire format and the streaming code are exactly upstream's.
+
+**The whole `audio/` package is kept, including `AudioPlaybackCapture`,** which
+this fork never instantiates. It is 138 lines, `AudioSource` refers to it, and
+keeping the package whole makes future rebases against upstream simpler than
+saving those lines would.
+
+**`Server.prepareMainLooper()` had to be carried into `Main`.** This is the one
+piece of `Server.java` that is not optional. `Workarounds`' *static initialiser*
+constructs an `android.app.ActivityThread`, whose constructor builds a `Handler`
+and therefore needs a prepared `Looper` on the calling thread. Dropping
+`Server.java` drops that preparation, and the failure is opaque: the shell
+prints only `Killed`, because the crash handler itself then fails trying to
+reach the activity manager to report the crash. The real cause is only visible
+in logcat:
+
+```
+java.lang.RuntimeException: Can't create handler inside thread Thread[main,5,main]
+  that has not called Looper.prepare()
+    at android.app.ActivityThread.<init>
+    at com.genymobile.scrcpy.Workarounds.<clinit>
+```
+
+## Rebasing onto a newer scrcpy
+
+1. Re-run the closure analysis rather than trusting this file's list.
+2. Re-apply the three patches; each is marked `PATCHED:` in place.
+3. Check `Streamer`'s wire format has not changed, or the app's parser breaks.
+4. Check whether `Workarounds` still needs a prepared `Looper`.

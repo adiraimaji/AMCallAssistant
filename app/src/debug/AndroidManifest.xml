@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      The stand-in for Google Meet's calls (diag/FakeAppCall): a self-managed
+      call through Telecom, which this permission allows. A normal permission,
+      and in debug builds only.
+    -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+
+    <application>
+        <!--
+          DEBUG BUILDS ONLY. This source set does not exist in a release APK,
+          so no shipped build has this receiver at all.
+
+          It is exported because `adb shell am broadcast` cannot deliver to a
+          non-exported receiver, and being scriptable from a USB shell is its
+          entire reason to exist. Exported also means any other app on the phone
+          can send it intents, which for a receiver that runs shell commands
+          would be a local privilege escalation - so it additionally requires a
+          token that can only be obtained by reading logcat, which since
+          Android 10 only adb and the app itself can do. See SpikeReceiver.
+        -->
+        <receiver
+            android:name=".diag.SpikeReceiver"
+            android:exported="true"
+            tools:ignore="ExportedReceiver" />
+
+        <!--
+          Telecom's way into that stand-in call. Exported only to Telecom:
+          BIND_TELECOM_CONNECTION_SERVICE is a system permission.
+        -->
+        <service
+            android:name=".diag.FakeAppCallService"
+            android:exported="true"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+
+        <!--
+          Fills the recordings list with invented calls for the README's
+          screenshots, when the diagnostic flag is set. A provider because the
+          system creates those before the first activity, ahead of even the
+          Application's onCreate; not exported, because nothing outside the app
+          has any business talking to it. See DemoRecordings.
+        -->
+        <provider
+            android:name=".diag.DemoProvider"
+            android:authorities="${applicationId}.demo"
+            android:exported="false" />
+    </application>
+</manifest>

@@ -1,0 +1,276 @@
+package com.adiraimaji.amcallassistant.recordings
+
+import android.provider.MediaStore
+import androidx.core.net.toUri
+import com.adiraimaji.amcallassistant.Prefs
+import com.adiraimaji.amcallassistant.recordings.FakeStorage.appUri
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.ConscryptMode
+import java.io.File
+import java.io.FileOutputStream
+
+/**
+ * Where a recording goes as it is saved, in each of the three places:
+ * a folder the user picked, then Recordings/AM Call Assistant through MediaStore, then
+ * app storage, each falling back to the next; what finishing one does, and
+ * what giving it up does. What Android itself makes of it is the emulator
+ * checks': these hold what AM Call Assistant asks for.
+ */
+@RunWith(RobolectricTestRunner::class)
+@ConscryptMode(ConscryptMode.Mode.OFF)
+@Config(sdk = [36])
+class RecordingStoreTest {
+
+    private val app = RuntimeEnvironment.getApplication()
+    private val name = "20261101_120000_in.ogg"
+    private val bytes = byteArrayOf(1, 2, 3)
+
+    @Before fun setUp() {
+        FakeStorage.forgetFileProviderFolders()
+        FakeMediaStore.install(File(app.cacheDir, "media"))
+    }
+
+    private fun RecordingStore.Target.write() =
+        FileOutputStream(descriptor.fileDescriptor).run { write(bytes); flush() }
+
+    @Test fun withNoFolderChosenItGoesToRecordingsAmcaHiddenUntilItIsFinished() {
+        val target = RecordingStore.open(app, name)!!
+        val asked = FakeMediaStore.inserted.single()
+        assertEquals(name, asked[MediaStore.MediaColumns.DISPLAY_NAME])
+        assertEquals("audio/ogg", asked[MediaStore.MediaColumns.MIME_TYPE])
+        assertEquals("Recordings/AM Call Assistant", asked[MediaStore.MediaColumns.RELATIVE_PATH])
+        assertEquals(1, asked[MediaStore.MediaColumns.IS_PENDING])
+        assertEquals(name, target.name)
+        assertEquals(FakeMediaStore.uriOf(1), target.uri)
+        assertNull(target.filePath)
+        val row = FakeMediaStore.rows.single()
+        assertTrue(row.pending)
+
+        target.write()
+        assertTrue(target.publish())
+        assertFalse(row.pending)
+        assertArrayEquals(bytes, row.file!!.readBytes())
+    }
+
+    @Test fun givenUpInRecordingsItLeavesNoRow() {
+        RecordingStore.open(app, name)!!.abandon()
+        assertTrue(FakeMediaStore.rows.isEmpty())
+    }
+
+    @Test fun aRowThatWillNotBeShownIsNoSavedRecording() {
+        val target = RecordingStore.open(app, name)!!
+        FakeMediaStore.refuses = IllegalStateException("no")
+        assertFalse(target.publish())
+    }
+
+    @Test fun aChosenFolderComesFirst() {
+        val dir = FakeFolder.install(app)
+        val target = RecordingStore.open(app, name)!!
+        assertEquals(FakeFolder.AUTHORITY, target.uri.authority)
+        assertNull(target.filePath)
+        assertEquals(name, target.name)
+        assertTrue(FakeMediaStore.inserted.isEmpty())
+        // Read and write: the muxer seeks back to finish its headers.
+        target.write()
+        assertTrue(target.publish())
+        assertArrayEquals(bytes, File(dir, name).readBytes())
+    }
+
+    @Test fun givenUpInAChosenFolderItLeavesNoFile() {
+        val dir = FakeFolder.install(app)
+        RecordingStore.open(app, name)!!.abandon()
+        assertTrue(dir.listFiles()!!.isEmpty())
+    }
+
+    @Test fun aFolderThatWillNotTakeItFallsBackToRecordings() {
+        FakeFolder.install(app)
+        FakeFolder.refuses = SecurityException("access taken back")
+        val refused = RecordingStore.open(app, name)!!
+        assertEquals(MediaStore.AUTHORITY, refused.uri.authority)
+        refused.abandon()
+
+        FakeFolder.refuses = null
+        FakeFolder.creates = { null }
+        val noDocument = RecordingStore.open(app, name)!!
+        assertEquals(MediaStore.AUTHORITY, noDocument.uri.authority)
+        noDocument.abandon()
+    }
+
+    @Test fun recordingsThatWillNotTakeItFallsBackToAppStorage() {
+        FakeMediaStore.install()
+        val target = RecordingStore.open(app, name)!!
+        val file = File(FakeStorage.appFolder(app), name)
+        assertEquals(file.absolutePath, target.filePath)
+        assertEquals(appUri(app, file), target.uri)
+        assertEquals(name, target.name)
+        target.write()
+        assertTrue(target.publish())
+        assertArrayEquals(bytes, file.readBytes())
+    }
+
+    @Test fun givenUpInAppStorageItLeavesNoFile() {
+        FakeMediaStore.install()
+        RecordingStore.open(app, name)!!.abandon()
+        assertFalse(File(FakeStorage.appFolder(app), name).exists())
+    }
+
+    @Test fun nowhereAtAllIsNoTargetAndNothingBeingWritten() {
+        FakeMediaStore.install()
+        val inTheWay = File(app.getExternalFilesDir(null), "recordings").apply { deleteRecursively(); writeText("a file") }
+        assertNull(RecordingStore.open(app, name))
+        assertFalse(Waveforms.isBeingWritten(name))
+        inTheWay.delete()
+    }
+
+    @Test fun itIsBeingWrittenFromOpenUntilItIsFinished() {
+        val level = keptLevels()
+        val target = RecordingStore.open(app, name)!!
+        assertTrue(Waveforms.isBeingWritten(name))
+        target.publish()
+        assertFalse(Waveforms.isBeingWritten(name))
+        // What was kept under the name was another file's.
+        assertFalse(level.exists())
+    }
+
+    @Test fun itIsBeingWrittenFromOpenUntilItIsGivenUp() {
+        val level = keptLevels()
+        val target = RecordingStore.open(app, name)!!
+        target.abandon()
+        assertFalse(Waveforms.isBeingWritten(name))
+        assertFalse(level.exists())
+    }
+
+    @Test fun itEndsOnce() {
+        val target = RecordingStore.open(app, name)!!
+        target.publish()
+        // A publish that failed is abandoned after it (the saver): levels
+        // worked out in between are not the file's to lose a second time.
+        val level = keptLevels()
+        target.abandon()
+        assertTrue(level.exists())
+        level.delete()
+    }
+
+    private val taken = "20261101_120000_in (1).ogg"
+
+    @Test fun aFolderThatFindsTheNameTakenGivesAnotherAndThatIsTheOneBeingWritten() {
+        FakeFolder.install(app)
+        FakeFolder.creates = { taken }
+        val theOther = keptLevels()
+        val target = RecordingStore.open(app, name)!!
+        assertEquals(taken, target.name)
+        assertTrue(Waveforms.isBeingWritten(taken))
+        assertFalse(Waveforms.isBeingWritten(name))
+        assertTrue(target.publish())
+        assertEquals(taken, target.name)
+        assertFalse(Waveforms.isBeingWritten(taken))
+        // The file that has the name is another recording, levels and all.
+        assertTrue(theOther.exists())
+        theOther.delete()
+    }
+
+    @Test fun mediaStoreMayNameItAsItFinishes() {
+        val theOther = keptLevels()
+        FakeMediaStore.finishesAs = { taken }
+        val target = RecordingStore.open(app, name)!!
+        assertEquals(name, target.name)
+        assertTrue(target.publish())
+        assertEquals(taken, target.name)
+        assertFalse(Waveforms.isBeingWritten(name))
+        assertFalse(Waveforms.isBeingWritten(taken))
+        assertTrue(theOther.exists())
+        theOther.delete()
+    }
+
+    @Test fun aNameThatCannotBeReadBackStaysTheOneAsked() {
+        FakeMediaStore.finishesAs = { taken }
+        val target = RecordingStore.open(app, name)!!
+        FakeMediaStore.listing = IllegalStateException("no")
+        assertTrue(target.publish())
+        assertEquals(name, target.name)
+    }
+
+    private fun keptLevels() = Waveforms.cacheFile(app, name).apply {
+        parentFile?.mkdirs()
+        writeBytes(ByteArray(Waveforms.LEVELS))
+    }
+
+    /** A folder whose grant Android will not let AM Call Assistant keep - none offered,
+     *  as for one the picker did not give - is refused, and the folder
+     *  chosen before stays, its grant with it. Robolectric took any grant
+     *  until PickerGrants, and this went untested (review, 2026-11-18). */
+    @Test fun aFolderWhoseGrantCannotBeKeptIsRefusedAndTheOneBeforeStays() {
+        FakeFolder.install(app)
+        val other = "content://${FakeFolder.AUTHORITY}/tree/primary%3AOther".toUri()
+        assertFalse(RecordingStore.setTree(app, other))
+        assertEquals(FakeFolder.tree, RecordingStore.treeUri(app))
+        assertEquals(listOf(FakeFolder.tree), app.contentResolver.persistedUriPermissions.map { it.uri })
+    }
+
+    /** Another folder chosen: the first one's grant is let go. */
+    @Test fun anotherFolderChosenLetsGoOfTheFirstsGrant() {
+        FakeFolder.install(app)
+        val other = "content://${FakeFolder.AUTHORITY}/tree/primary%3AOther".toUri()
+        PickerGrants.offer(other)
+        assertTrue(RecordingStore.setTree(app, other))
+        assertEquals(other, RecordingStore.treeUri(app))
+        assertEquals(listOf(other), app.contentResolver.persistedUriPermissions.map { it.uri })
+    }
+
+    /** The folder picker opens at the folder chosen - a document's uri, as
+     *  EXTRA_INITIAL_URI takes one - and where it would with none chosen. */
+    @Test fun thePickerOpensAtTheFolderChosen() {
+        FakeFolder.install(app)
+        val start = RecordingStore.pickerStart(app)!!
+        assertEquals(
+            android.provider.DocumentsContract.getTreeDocumentId(FakeFolder.tree),
+            android.provider.DocumentsContract.getDocumentId(start),
+        )
+        RecordingStore.clearTree(app)
+        assertEquals(null, RecordingStore.pickerStart(app))
+    }
+
+    @Test fun whatTheUserIsToldOfTheFolder() {
+        assertEquals("Recordings/AM Call Assistant", RecordingStore.describe(app))
+        assertNull(RecordingStore.treeUri(app))
+
+        FakeFolder.install(app)
+        assertEquals(FakeFolder.tree, RecordingStore.treeUri(app))
+        assertEquals("Calls", RecordingStore.describe(app))
+
+        // A volume's root has nothing after the colon; a tree it cannot read
+        // has no id at all. Each offered, as if the picker had given it.
+        val root = "content://${FakeFolder.AUTHORITY}/tree/primary%3A".toUri()
+        PickerGrants.offer(root)
+        assertTrue(RecordingStore.setTree(app, root))
+        assertEquals("the folder you chose", RecordingStore.describe(app))
+        // Said once, where a name cannot be read; else with the name.
+        assertEquals("the folder you chose", RecordingStore.chosenWords(RecordingStore.describe(app)))
+        assertEquals("Calls, the folder you chose", RecordingStore.chosenWords("Calls"))
+        val noId = "content://${FakeFolder.AUTHORITY}/document/1".toUri()
+        PickerGrants.offer(noId)
+        assertTrue(RecordingStore.setTree(app, noId))
+        assertEquals("the folder you chose", RecordingStore.describe(app))
+
+        RecordingStore.clearTree(app)
+        assertNull(RecordingStore.treeUri(app))
+        assertEquals("Recordings/AM Call Assistant", RecordingStore.describe(app))
+        assertFalse(Prefs.of(app).contains("recordings_tree_uri"))
+    }
+
+    @Test fun aNameIsWhenAndWhichWay() {
+        val at = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).parse("20261101_120000")!!
+        assertEquals("20261101_120000_in.ogg", RecordingStore.nameFor(at, incoming = true))
+        assertEquals("20261101_120000_out.ogg", RecordingStore.nameFor(at, incoming = false))
+    }
+}

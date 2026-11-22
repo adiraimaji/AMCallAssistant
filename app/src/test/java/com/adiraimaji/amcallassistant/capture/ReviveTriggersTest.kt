@@ -1,0 +1,178 @@
+package com.adiraimaji.amcallassistant.capture
+
+import android.app.PendingIntent
+import android.content.ComponentName
+import android.content.Intent
+import com.adiraimaji.amcallassistant.DeepLink
+import com.adiraimaji.amcallassistant.MainActivity
+import com.adiraimaji.amcallassistant.capture.HeldWork.Companion.NOW
+import com.adiraimaji.amcallassistant.capture.HeldWork.Companion.PERIODIC
+import com.adiraimaji.amcallassistant.capture.HeldWork.Companion.USB_WATCH
+import com.adiraimaji.amcallassistant.capture.HeldWork.Companion.WIFI
+import com.adiraimaji.amcallassistant.recorder.DebugSwitchesOff
+import com.adiraimaji.amcallassistant.recorder.NetworkRevive
+import com.adiraimaji.amcallassistant.recorder.RecorderSwitch
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.ConscryptMode
+
+/**
+ * What each trigger arms, as it is: which of the keep-alive's runs - the
+ * heartbeat, a kick, the Wi-Fi run - the USB watch, and the system-held
+ * Wi-Fi watch. The subsets differ by trigger, and on purpose or not they are
+ * what the phones do today. The keep-alive's and the USB watch's own runs
+ * are in their tests, RecorderSwitch.turn's in RecorderSwitchTest; the home
+ * screen's check (RecorderAndSetup.recheckSetup) is not here.
+ */
+@RunWith(RobolectricTestRunner::class)
+@ConscryptMode(ConscryptMode.Mode.OFF)
+@Config(sdk = [36])
+class ReviveTriggersTest {
+
+    private val context = RuntimeEnvironment.getApplication()
+    private lateinit var work: HeldWork
+
+    @Before fun aPhoneWithAmcaOn() {
+        TestPhone.switchesOn(context)
+        DebugSwitchesOff.forget(context)
+        RecorderSwitch.set(context, true)
+        TestPhone.clearReviveLog(context)
+        work = HeldWork(context)
+    }
+
+    @After fun closeWorkManager() = work.close()
+
+    private val wifiWatch = "the Wi-Fi watch"
+
+    /** Every unique name with work under it, and the Wi-Fi watch if armed. */
+    private fun armed(): Set<String> =
+        HeldWork.ALL.filter { work.unique(it).isNotEmpty() }.toSet() +
+            (if (TestPhone.wifiWatches(context).isNotEmpty()) setOf(wifiWatch) else emptySet())
+
+    private fun kickInput() = work.inputOf(work.unique(NOW).single().id)
+
+    private fun boot(action: String = Intent.ACTION_BOOT_COMPLETED) = BootReceiver().onReceive(context, Intent(action))
+
+    @Test fun bootSetUpArmsTheHeartbeatTheWatchesAndAKick() {
+        TestPhone.setUp(context)
+        boot()
+        assertEquals(setOf(PERIODIC, USB_WATCH, NOW, wifiWatch), armed())
+        assertEquals(mapOf("for_wifi" to false), kickInput())
+        // It only enqueues: the kick's run does the reviving.
+        assertEquals(emptyList<String>(), TestPhone.reviveLog(context))
+    }
+
+    @Test fun bootArmsWhateverTheSwitchSays() {
+        // Tied to setup, not the switch: the recorder is kept for an On
+        // without Wi-Fi.
+        TestPhone.setUp(context)
+        RecorderSwitch.set(context, false)
+        boot()
+        assertEquals(setOf(PERIODIC, USB_WATCH, NOW, wifiWatch), armed())
+    }
+
+    @Test fun bootNotSetUpArmsNothing() {
+        boot()
+        assertEquals(emptySet<String>(), armed())
+    }
+
+    @Test fun aLockedBootArmsNothing() {
+        // The identity is still encrypted then; BOOT_COMPLETED follows. Not
+        // delivered to this receiver at all (not directBootAware): were it,
+        // nothing would be armed.
+        TestPhone.setUp(context)
+        boot(Intent.ACTION_LOCKED_BOOT_COMPLETED)
+        assertEquals(emptySet<String>(), armed())
+    }
+
+    @Test fun wifiBackSetUpStartsTheWifiRunAndNothingElse() {
+        TestPhone.setUp(context)
+        NetworkReviveReceiver().onReceive(context, Intent("com.adiraimaji.amcallassistant.WIFI_BACK"))
+        assertEquals(setOf(WIFI), armed())
+        assertEquals(mapOf("for_wifi" to true), work.inputOf(work.unique(WIFI).single().id))
+    }
+
+    @Test fun wifiBackNotSetUpStartsNothing() {
+        NetworkReviveReceiver().onReceive(context, Intent("com.adiraimaji.amcallassistant.WIFI_BACK"))
+        assertEquals(emptySet<String>(), armed())
+    }
+
+    @Test fun wifiBackWhateverTheSwitchSays() {
+        TestPhone.setUp(context)
+        RecorderSwitch.set(context, false)
+        NetworkReviveReceiver().onReceive(context, Intent("com.adiraimaji.amcallassistant.WIFI_BACK"))
+        assertEquals(setOf(WIFI), armed())
+    }
+
+    @Test fun openingTheAppWithAmcaOnArmsTheHeartbeatTheUsbWatchAndAKick() {
+        TestPhone.setUp(context)
+        val activity = Robolectric.buildActivity(MainActivity::class.java).create()
+        // Not the Wi-Fi watch: the screen's own check arms that.
+        assertEquals(setOf(PERIODIC, USB_WATCH, NOW), armed())
+        assertEquals(mapOf("for_wifi" to false), kickInput())
+        activity.destroy()
+    }
+
+    /** The window there is, brought forward by a plain tap - a
+     *  notification, the tile (DeepLink.home) - does what opening it did:
+     *  until 0.30 those opened a second window, whose creation armed the
+     *  kick. A button's link to somewhere of its own never opened one, and
+     *  does not. */
+    @Test fun theWindowBroughtForwardArmsAsAnOpeningDoes() {
+        TestPhone.setUp(context)
+        val activity = Robolectric.buildActivity(MainActivity::class.java).create()
+        val manager = androidx.work.WorkManager.getInstance(context)
+        fun forget() {
+            manager.cancelUniqueWork(NOW).result.get()
+            manager.pruneWork().result.get()
+            assertEquals(emptyList<androidx.work.WorkInfo>(), work.unique(NOW))
+        }
+        forget()
+        activity.newIntent(DeepLink.intent(context, DeepLink.Kind.PLAY, "a.ogg"))
+        assertEquals(emptyList<androidx.work.WorkInfo>(), work.unique(NOW))
+        activity.newIntent(DeepLink.home(context))
+        assertEquals(1, work.unique(NOW).size)
+        activity.destroy()
+        // Not left for a later test's screen to take.
+        DeepLink.consumed()
+    }
+
+    @Test fun openingTheAppWithAmcaOffArmsNothing() {
+        // Unlike boot and the watches, which ask setup and not the switch.
+        TestPhone.setUp(context)
+        RecorderSwitch.set(context, false)
+        val activity = Robolectric.buildActivity(MainActivity::class.java).create()
+        assertEquals(emptySet<String>(), armed())
+        activity.destroy()
+    }
+
+    @Test fun openingTheAppAsksTheSwitchNotSetup() {
+        // Not set up, as after an install: armed all the same, and the
+        // kick's run stops at its own setup gate.
+        val activity = Robolectric.buildActivity(MainActivity::class.java).create()
+        assertEquals(setOf(PERIODIC, USB_WATCH, NOW), armed())
+        activity.destroy()
+    }
+
+    @Test fun theWifiWatchIsOnePendingIntentToTheReceiver() {
+        NetworkRevive.arm(context)
+        NetworkRevive.arm(context)
+        // Armed again, the same PendingIntent replaces the first.
+        val watch: PendingIntent = TestPhone.wifiWatches(context).single()
+        val shadow = shadowOf(watch)
+        assertTrue(shadow.isBroadcast)
+        assertEquals(0, shadow.requestCode)
+        assertEquals(PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE, shadow.flags)
+        assertEquals("com.adiraimaji.amcallassistant.WIFI_BACK", shadow.savedIntent.action)
+        assertEquals(ComponentName(context, NetworkReviveReceiver::class.java), shadow.savedIntent.component)
+    }
+}

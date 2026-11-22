@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The themed-icon layer of icon/icon.svg: the handset and the record mark in one
+  colour, because the system throws the colours away and tints the alpha. The
+  blue field is deliberately absent - a themed icon is only the mark.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+
+    <group
+        android:scaleX="14"
+        android:scaleY="14"
+        android:translateX="88"
+        android:translateY="104">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z" />
+    </group>
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M348,146a30,30 0 1,0 60,0a30,30 0 1,0 -60,0" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="12"
+        android:pathData="M324,146a54,54 0 1,0 108,0a54,54 0 1,0 -108,0" />
+</vector>

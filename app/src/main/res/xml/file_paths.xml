@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!--
+      Only these directories are shared, and only as long as a grant lasts.
+      Recordings in the app's own external files dir - where a save goes
+      only when Recordings/AM Call Assistant and a chosen folder both fail - are read by
+      no other app, so playing one elsewhere needs a content URI handed out
+      deliberately, per file, rather than loosening storage.
+    -->
+    <external-files-path name="recordings" path="recordings/" />
+    <!--
+      Throwaway .m4a copies made only at the moment of sharing, so a recording
+      plays in Apple's stock apps (which will not open the Ogg it is kept as).
+      Same app-private root as the recordings, handed out per file by the same
+      per-grant content URI; swept when stale.
+    -->
+    <external-files-path name="shares" path="shares/" />
+    <!--
+      The release APK the in-app updater puts in the app's own cache. Handed
+      out to Android's installer for one grant only, like a recording shared
+      with another app.
+    -->
+    <cache-path name="updates" path="updates/" />
+</paths>

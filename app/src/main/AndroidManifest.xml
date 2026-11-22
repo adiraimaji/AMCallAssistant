@@ -1,0 +1,554 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      The whole permission list is below, and it is worth noticing what is NOT
+      in it. A call recorder would normally hold RECORD_AUDIO; this one does
+      not, because it never records anything. The capture happens in a
+      shell-privileged process on the other end of a loopback socket, and this
+      app only moves the bytes it sends into a file.
+
+      INTERNET is not about the internet. It is required for any TCP socket,
+      including one to 127.0.0.1, which is the only address this app connects to.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Installing the release the in-app updater downloads. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!--
+      Breaks the post-reboot deadlock, and cannot be obtained by deception.
+
+      Measured: a reboot resets adb_wifi_enabled to 0. The app needs ADB to run
+      shell commands, ADB needs Wireless debugging, and turning Wireless
+      debugging back on is itself a secure setting. Without this the user has to
+      re-toggle it by hand after every single reboot.
+
+      Its protection level is signature|privileged|DEVELOPMENT, and the
+      development flag is the whole point: `pm grant` can give it to an app that
+      declares it, but no runtime permission dialog can, so no user can be
+      talked into granting it. It is taken once, over the ADB session that
+      already exists during setup. Declared but ungranted it does nothing.
+    -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!--
+      Telecom's own account of each call, through CallTracker. An app-op
+      permission: declared here, allowed by the daemon as shell.
+    -->
+    <uses-permission android:name="android.permission.MANAGE_ONGOING_CALLS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!--
+      Permissions this app does not want and never asked for. Removed, not
+      merely unused.
+
+      The manifest merger adds them by itself. libadb-android declares no
+      targetSdkVersion, so the merger applies a compatibility rule meant for
+      pre-2009 apps and grants three things on its behalf:
+
+        WRITE_EXTERNAL_STORAGE
+          IMPLIED ... reason: io.github.muntashirakon.adb has a targetSdkVersion < 4
+        READ_EXTERNAL_STORAGE
+          IMPLIED ... reason: io.github.muntashirakon.adb requested WRITE_EXTERNAL_STORAGE
+        READ_PHONE_STATE
+          IMPLIED ... reason: io.github.muntashirakon.adb has a targetSdkVersion < 4
+
+      None is wanted as the merger has it. Writing needs no permission at all
+      - MediaStore lets an app create its own media. Phone state is read by
+      the shell-side daemon, never by this app; the app used to declare this
+      one itself, for a call listener it no longer has, and when that
+      declaration went the merger quietly put it back. Every user was asked
+      to allow it either way. READ_EXTERNAL_STORAGE is declared below instead,
+      for Android 12 alone.
+    -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"
+        tools:node="remove" />
+
+    <!--
+      READ_MEDIA_AUDIO: to show recordings THIS APP made, after a reinstall.
+
+      Narrower than the blanket permission removed just above, and asked for a
+      reason that can be written in one sentence next to the button.
+
+      MediaStore hands an app the media it owns with no permission at all,
+      which is why listing needed nothing here before. Ownership does not
+      survive the app, though. Uninstall AM Call Assistant and every recording it made is
+      left with owner_package_name = NULL, so the reinstalled app queries its
+      own folder and is told it is empty - while the files sit untouched in
+      Recordings/AM Call Assistant, playable by every other audio app on the phone.
+
+      Measured rather than assumed: seven recordings on disk, seven rows in
+      MediaStore, all of them owner NULL, and a list saying "No recordings yet".
+
+      Losing sight of someone's calls because they reinstalled an app is worse
+      than this permission. So it is asked for where the loss actually shows -
+      in the empty list, with the reason beside it - and refusing costs nothing
+      but the older recordings: AM Call Assistant still records, and still sees everything
+      it makes from here on.
+
+      READ_EXTERNAL_STORAGE is the same thing on Android 12, which has no
+      READ_MEDIA_AUDIO: there it reads every photo, video and audio file, not
+      audio alone. It used to be left out on 12 for that, and 12 then listed
+      no recording from before a reinstall at all; the user chose to ask for
+      it there (2026-10-24), the same way and for the same reason. Capped at
+      12 (maxSdkVersion 32), so 13 and later never see it, and "replace" so
+      the merger's own, uncapped one (above) does not come back with it.
+    -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"
+        tools:node="replace" />
+
+    <!--
+      NOT here, deliberately: RECORD_AUDIO, and the microphone
+      foreground-service type that would require it.
+
+      This app never opens an audio device. The capture happens in a shell-UID
+      process on the other end of a loopback socket, and this process only moves
+      bytes from that socket into a file. Declaring a microphone permission
+      would mean asking the user for access this code has no use for, to
+      describe work it does not do - and it is the sort of over-declaration that
+      makes a recorder look like something worse than it is.
+
+      SPECIAL_USE is the honest type for "keep me alive while I drain a socket".
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Playing a recording with the screen off, in PlaybackService: the type
+         Android gives media playback. Granted at install; it plays, never
+         records. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- A reboot kills the shell-side recorder and turns Wireless debugging
+         off. BootReceiver arms the keep-alive job that brings it back once
+         there is Wi-Fi to do it over. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- WorkManager declares it too, for the keep-alive job. Declared here
+         because the cable watch takes one itself (CallMonitorService): a
+         cable usually comes out with the screen off, and a phone asleep does
+         not run the watch. Granted at install. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!--
+      Optional, and asked for in the app rather than assumed here.
+
+      The only way to know who a call was with. Nothing else the app holds can
+      answer it - the daemon's call watch reports that a call started, and
+      which way, and nothing more, by design - so without this the list can
+      say when a call happened and not with whom.
+
+      It is a dangerous permission on an app that records phone calls, which is
+      worth a moment's thought from the user, so nothing depends on it: the app
+      is fully functional ungranted, a banner offers it once, and Settings keeps
+      the offer open. READ_CONTACTS goes with it, asked for together: the log
+      caches a name, but the photo, the star and a name the log has not cached
+      live in the contacts provider (see CallLogLookup).
+    -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+    <!--
+      Keeps Ask first's mid-call question on screen until it is answered:
+      without it, a minute (RecordPromptActivity says how that was measured).
+
+      Given at install. From Android 14 the user can turn it off (Settings,
+      Special app access, Full screen notifications), and Google Play takes it
+      from apps that are not calling or alarm apps (AOSP's "Full-screen intent
+      limits"). Turned off, the question still asks and waits in the shade, so
+      nothing is gated on it; in Ask first, home says what it costs
+      (NotificationHealth, ASK_FIRST_BRIEF).
+    -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
+    <!--
+      The vendor screens that decide whether this app may start after a reboot.
+
+      NOT a convenience: a phone that will not deliver BOOT_COMPLETED leaves the
+      keep-alive job and the Wi-Fi watcher unarmed, so the recorder is never
+      rebuilt and nothing records until the app is opened by hand. Measured on
+      an Honor, both ways - see AutoStart, which offers to open the right one.
+
+      Declared package by package rather than with QUERY_ALL_PACKAGES. Since
+      Android 11 an app sees only what it declares, and what this app needs to
+      see is these fifteen activities and nothing else. A call recorder asking
+      to enumerate every installed app would be asking for something it does not
+      need, on the one kind of app where that matters.
+    -->
+    <queries>
+        <package android:name="com.hihonor.systemmanager" />
+        <package android:name="com.huawei.systemmanager" />
+        <package android:name="com.miui.securitycenter" />
+        <package android:name="com.coloros.safecenter" />
+        <package android:name="com.oppo.safe" />
+        <package android:name="com.vivo.permissionmanager" />
+        <package android:name="com.iqoo.secure" />
+        <package android:name="com.samsung.android.lool" />
+        <package android:name="com.letv.android.letvsafe" />
+        <package android:name="com.asus.mobilemanager" />
+        <package android:name="com.meizu.safe" />
+        <!--
+          Honor's Phone app, which plays recordings named its way from
+          Sounds/CallRecord: the file-name choice for it is offered only
+          where it is installed. See FileNames.
+        -->
+        <package android:name="com.hihonor.contacts" />
+        <!--
+          The messengers - and Google Meet - whose calls can be recorded, so
+          Settings can offer the ones installed. See VoipApps.
+        -->
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+        <package android:name="org.telegram.messenger" />
+        <package android:name="org.telegram.messenger.web" />
+        <package android:name="org.telegram.messenger.beta" />
+        <package android:name="org.thunderdog.challegram" />
+        <package android:name="org.thoughtcrime.securesms" />
+        <package android:name="com.viber.voip" />
+        <package android:name="com.google.android.apps.tachyon" />
+        <!--
+          The shell, whose permissions decide whether messenger calls can be
+          recorded at all: see VoipApps.supported.
+        -->
+        <package android:name="com.android.shell" />
+        <!--
+          The phone's text-to-speech engines, so a written greeting can list
+          the voices already installed. Visibility only; no permission.
+        -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
+    <!--
+      The Locale plugin protocol (Tasker's Plugin > AM Call Assistant). The two edit
+      activities are exported so Tasker can open them; they return a result and
+      never change anything on their own. The fire receiver is exported with no
+      android:permission: Tasker does not hold a permission declared by us, and
+      a custom signature permission makes Tasker reject the plugin as having
+      "no permission receiver". The config it sends only changes AM Call Assistant's own
+      settings.
+    -->
+
+    <application
+        android:name=".AmCallAssistantApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AmCallAssistant">
+
+        <!--
+          The mid-call prompt's full-screen half. Opens for real only on a
+          locked screen; the rest of the time the system demotes it to a
+          banner, and that demotion is what makes the banner stay up for about
+          a minute instead of five seconds. See RecordPromptActivity.
+
+          excludeFromRecents and noHistory because it is a question, not a
+          place: it should never be something the user swipes back to later and
+          answers about a call that ended an hour ago.
+
+          A task of its own: started with NEW_TASK and CLEAR_TASK (RecordPrompt),
+          it cleared AM Call Assistant's own task, whose affinity it had - the window
+          there, with its place, its question and a greeting's take, went
+          with it (read from the code).
+        -->
+        <activity
+            android:name=".RecordPromptActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleTop"
+            android:taskAffinity="${applicationId}.prompt"
+            android:showOnLockScreen="true" />
+
+        <!--
+          The Quick Settings tile's question before turning off with all
+          debugging, away from Wi-Fi. See-through, so the dialog shows over
+          whatever the panel was pulled down over; a question, not a place.
+          A task of its own (no affinity): with AM Call Assistant's, the tile's start
+          would bring AM Call Assistant's own task forward behind the question, and
+          answering would leave the user there.
+        -->
+        <activity
+            android:name=".TurnOffQuestionActivity"
+            android:exported="false"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.AmCallAssistant.Question" />
+
+        <!--
+          One window. AM Call Assistant's own ways in - the Quick Settings tile, the
+          media notification, every notification - start it with
+          MainActivity.open's flags, as deep links did already: the one window
+          there is comes forward, its intent through onNewIntent, and what is
+          on top of it in its task (a picker opened from AM Call Assistant) is finished.
+          singleTop catches the tile's long press, which Android starts, when
+          AM Call Assistant is on top. The launcher brings the task forward with a picker
+          left open still there; over a task begun another way the window it
+          makes goes at once (MainActivity.onCreate). Not singleTask: that
+          finished the picker, a permission's question or Android's "delete
+          this recording?" on a tap of the launcher too (the author's choice,
+          2026-11-08).
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!--
+              A long press on the Quick Settings tile opens AM Call Assistant, not App
+              info. Android's Quick Settings tiles guide: "Long-tapping a tile
+              prompts the App Info screen for the user. To override this
+              behavior ... add an <intent-filter> to one of your activities
+              with ACTION_QS_TILE_PREFERENCES." Asked for in issue #37. Not
+              guarded with BIND_QUICK_SETTINGS_TILE as the guide suggests: this
+              is the launcher activity, which anything may start anyway.
+            -->
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+            </intent-filter>
+        </activity>
+
+        <!-- Tasker/Locale plugin edit screens, under Plugin > AM Call Assistant. -->
+        <activity
+            android:name=".tasker.MainEditActivity"
+            android:exported="true"
+            android:label="Toggle AM Call Assistant"
+            android:theme="@style/Theme.AmCallAssistant">
+            <intent-filter>
+                <action android:name="com.twofortyfouram.locale.intent.action.EDIT_SETTING" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="com.twofortyfouram.locale.intent.meta.ACTIVITY"
+                android:value="com.twofortyfouram.locale.intent.meta.ACTIVITY" />
+        </activity>
+        <activity
+            android:name=".tasker.AnswerEditActivity"
+            android:exported="true"
+            android:label="AM Answering Machine"
+            android:theme="@style/Theme.AmCallAssistant">
+            <intent-filter>
+                <action android:name="com.twofortyfouram.locale.intent.action.EDIT_SETTING" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="com.twofortyfouram.locale.intent.meta.ACTIVITY"
+                android:value="com.twofortyfouram.locale.intent.meta.ACTIVITY" />
+        </activity>
+        <!-- Tasker cannot hold a permission this app declares (it has a
+             different signing key), so the receiver must have none; the config
+             it sends only changes AM Call Assistant's own settings. -->
+        <receiver
+            android:name=".tasker.FireReceiver"
+            android:exported="true"
+            tools:ignore="ExportedReceiver">
+            <intent-filter>
+                <action android:name="com.twofortyfouram.locale.intent.action.FIRE_SETTING" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          Woken by the system, through our own PendingIntent, when Wi-Fi
+          returns - to revive the recorder at once instead of on the next
+          keep-alive period. Not exported: it is only ever fired by the
+          PendingIntent this app registered (see NetworkRevive), which needs no
+          exported flag.
+        -->
+        <receiver
+            android:name=".capture.NetworkReviveReceiver"
+            android:exported="false" />
+
+        <!--
+          The after-call notification's Delete (asked, then confirmed), Keep,
+          and the missed-call notification and the recorder-down alert being
+          cleared. Not exported: only
+          this app's own immutable PendingIntents reach it, so the recording it
+          is told to delete is one this app put in the notification.
+        -->
+        <receiver
+            android:name=".capture.AfterCallReceiver"
+            android:exported="false" />
+
+        <!--
+          Not exported: BOOT_COMPLETED is a protected broadcast that only the
+          system may send, so exporting would gain nothing.
+
+          directBootAware is deliberately FALSE, so it takes no
+          LOCKED_BOOT_COMPLETED - Android sends that to encryption-aware
+          components alone (developer.android.com, Direct Boot), before the
+          first unlock, while /data is still encrypted, and everything this
+          app needs - its ADB identity above all - lives there. Its filter for
+          it, here until 1.2, could never be met.
+        -->
+        <receiver
+            android:name=".capture.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          Plays a recording on with the screen off, under the system's media
+          controls. Exported, with Media3's intent filter, because those
+          controls - the notification, the lock screen, a headset - bind to
+          it; the session turns away any other app that asks, and only AM Call Assistant
+          chooses what plays (PlaybackService, PlaybackRules.access).
+        -->
+        <service
+            android:name=".capture.PlaybackService"
+            android:exported="true"
+            tools:ignore="ExportedService"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
+
+        <!--
+          Exported so the shell-side daemon can wake it with
+          `am start-foreground-service` when a call begins. That is the route
+          that lets the app be dormant between calls instead of holding a
+          permanent foreground service: iAware drops the PHONE_STATE broadcast
+          to a dead process, but a direct service start from shell is not a
+          broadcast and nothing filters it.
+
+          Exported is not open. Every intent from outside must carry a token
+          the app minted and handed to the daemon in its environment, and the
+          service does nothing without it. Its own internal actions are
+          unchanged.
+        -->
+        <service
+            android:name=".capture.CallMonitorService"
+            android:exported="true"
+            tools:ignore="ExportedService"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Shows that a call is being recorded and, when it
+                    ends, collects the finished recording from a shell-privileged
+                    capture process over a loopback socket. Also runs briefly
+                    when that process asks: to restart it after a computer's
+                    cable is unplugged, and to warn the user that the phone
+                    stopped the app in the background. The app holds no
+                    audio permission and opens no audio device itself." />
+        </service>
+
+        <!--
+          Receives the pairing code typed into the notification, pairs, then
+          WAITS for the phone to become reachable and finishes setup.
+
+          A foreground service, not a receiver, because on this phone the two
+          switches the connect depends on do not reliably hold after being
+          flipped in Settings - so this watches them and connects the moment
+          both are on, under the same notification, rather than taking one shot
+          and making the user pair again. shortService: bounded, must not be
+          killed part-way, and needs no permission beyond FOREGROUND_SERVICE.
+          The notification action points straight at it, as Shizuku's does.
+
+          Not exported: it is reached only through this app's own PendingIntent,
+          and a service that pairs an ADB session should not be addressable by
+          anything else.
+
+          This replaced a floating overlay, which cannot work. Android hides
+          non-system overlays over the Settings app - correct anti-tapjacking
+          behaviour - so the one screen the box needed to cover is the one screen
+          it may not. The notification shade is a system surface and has no such
+          problem, and it needs no permission beyond POST_NOTIFICATIONS.
+        -->
+        <service
+            android:name=".ui.PairingService"
+            android:exported="false"
+            android:foregroundServiceType="shortService" />
+
+        <!--
+          Hands out a read-only URI for ONE file at a time: a recording kept
+          in app storage - the last place a save falls back to, which nothing
+          else may read (recordings are saved in Recordings/AM Call Assistant, or a folder
+          chosen, before that) - and Share's .m4a copies. This is how such a
+          file is shared deliberately instead of by loosening that. Its own
+          subclass, as FileProvider's reference asks (RecordingsFileProvider).
+        -->
+        <provider
+            android:name=".recordings.RecordingsFileProvider"
+            android:authorities="${applicationId}.recordings"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+
+        <!--
+          Telecom binds this, a non-UI in-call service, for the length of each
+          call once MANAGE_ONGOING_CALLS is allowed. Exported only to Telecom:
+          BIND_INCALL_SERVICE is a system permission.
+        -->
+        <service
+            android:name=".capture.CallTracker"
+            android:exported="true"
+            android:permission="android.permission.BIND_INCALL_SERVICE">
+            <meta-data
+                android:name="android.telecom.IN_CALL_SERVICE_UI"
+                android:value="false" />
+            <intent-filter>
+                <action android:name="android.telecom.InCallService" />
+            </intent-filter>
+        </service>
+
+        <!--
+          Cancels the system "Wireless debugging connected" notification, which
+          the recorder cannot avoid keeping on. Bound by the system once granted
+          notification access - given over ADB during setup, after the user's
+          yes there, rather than sending them through Android's restricted
+          settings: a side-loaded app's switch for it is greyed out until App
+          info, More, Allow restricted settings - which Google's help warns
+          against unless you trust the app. See the service class.
+        -->
+        <service
+            android:name=".capture.DebugNotificationCleaner"
+            android:exported="false"
+            android:label="AM Call Assistant"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!--
+          The Quick Settings tile: the recording on/off switch. Exported because
+          the system binds it, and only the system can: binding needs
+          BIND_QUICK_SETTINGS_TILE, which no app can hold. See RecorderTile.
+        -->
+        <service
+            android:name=".ui.RecorderTile"
+            android:exported="true"
+            android:icon="@drawable/ic_tile"
+            android:label="AM Call Assistant"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
+
+    </application>
+
+</manifest>

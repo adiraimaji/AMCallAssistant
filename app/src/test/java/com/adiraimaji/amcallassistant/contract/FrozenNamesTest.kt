@@ -1,0 +1,168 @@
+package com.adiraimaji.amcallassistant.contract
+
+import androidx.work.ListenableWorker
+import com.adiraimaji.amcallassistant.capture.CallMonitorService
+import com.adiraimaji.amcallassistant.capture.DebugNotificationCleaner
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import javax.xml.parsers.DocumentBuilderFactory
+
+/**
+ * The names something outside the APK remembers, unchanged.
+ *
+ * A rename compiles and passes every other test, and breaks a phone that has
+ * kept the old name: WorkManager stores each worker's class name and the
+ * periodic run is enqueued with KEEP, so old work is never replaced; the
+ * recorder starts `.capture.CallMonitorService` by name, with action and extra
+ * names of its own; the Quick Settings tile and the notification listener are
+ * granted by component; the tools start `.MainActivity` and the debug
+ * receiver by name. The 1.0 restructuring moves classes between packages, and
+ * these are the ones that must not move.
+ */
+class FrozenNamesTest {
+
+    @Test
+    fun theManifestDeclaresTheSameComponentsUnderTheSameNames() {
+        assertEquals(MAIN_COMPONENTS, components("app/src/main/AndroidManifest.xml"))
+        assertEquals(DEBUG_COMPONENTS, components("app/src/debug/AndroidManifest.xml"))
+    }
+
+    @Test
+    fun everyDeclaredComponentIsAClassThatExists() {
+        (MAIN_COMPONENTS + DEBUG_COMPONENTS).forEach { Class.forName(fullName(it)) }
+    }
+
+    @Test
+    fun theWorkersKeepTheClassNamesWorkManagerStored() {
+        WORKERS.forEach {
+            assertTrue("$it is not a worker", ListenableWorker::class.java.isAssignableFrom(Class.forName(it)))
+        }
+    }
+
+    @Test
+    fun theRecorderKeepsTheClassNameItIsStartedAndKilledBy() {
+        // The app starts it by this name and kills a wedged one by it - an old
+        // one too, still running from before an update, which a newer app
+        // could not find under a new name - and the tools look for it by it.
+        val main = Repo.text("shellserver/src/com/adiraimaji/amcallassistant/shell/Main.java")
+        assertTrue("package com.adiraimaji.amcallassistant.shell;" in main)
+        assertTrue("public final class Main " in main)
+        assertTrue("const val MAIN_CLASS = \"com.adiraimaji.amcallassistant.shell.Main\"" in Repo.app)
+        assertTrue("pkill -f '[c]om.adiraimaji.amcallassistant.shell.Main'" in Repo.app)
+    }
+
+    @Test
+    fun theRecorderStartsTheServiceTheAppDeclaresWithTheActionsItHandles() {
+        fun constant(name: String) =
+            checkNotNull(Regex("""static final String $name = "([^"]*)";""").find(Repo.recorder)) { "$name is gone from the recorder" }
+                .groupValues[1]
+
+        assertEquals(APPLICATION_ID, constant("APP_PACKAGE"))
+        assertEquals("$APPLICATION_ID/.capture.CallMonitorService", constant("APP_SERVICE"))
+        assertTrue(".capture.CallMonitorService" in MAIN_COMPONENTS)
+        assertTrue("applicationId = \"$APPLICATION_ID\"" in Repo.text("app/build.gradle.kts"))
+
+        mapOf(
+            "ACTION_CALL_STARTED" to CallMonitorService.ACTION_CALL_STARTED,
+            "ACTION_CALL_ENDED" to CallMonitorService.ACTION_CALL_ENDED,
+            "ACTION_CABLE" to CallMonitorService.ACTION_CABLE,
+            "ACTION_BACKGROUND_KILLED" to CallMonitorService.ACTION_BACKGROUND_KILLED,
+            "ACTION_MESSAGE_STARTED" to CallMonitorService.ACTION_MESSAGE_STARTED,
+            "ACTION_MESSAGE_TAKEN" to CallMonitorService.ACTION_MESSAGE_TAKEN,
+            "ACTION_RECORDING_STOPPED" to CallMonitorService.ACTION_RECORDING_STOPPED,
+            "ACTION_RECORDING_BACK" to CallMonitorService.ACTION_RECORDING_BACK,
+        ).forEach { (name, appSide) -> assertEquals(name, appSide, constant(name)) }
+    }
+
+    @Test
+    fun theRecorderGrantsTheListenerTheAppDeclares() {
+        // Notification access is granted to a component, by the recorder
+        // (Wire.COMMAND_ALLOW_LISTENER), which names it: renamed, Show who
+        // called and Hide the debugging notification would have nothing to
+        // turn on, and Android would keep the old name allowed.
+        val listener = checkNotNull(Regex("""static final String APP_LISTENER = "([^"]*)";""").find(Repo.recorder)) {
+            "APP_LISTENER is gone from the recorder"
+        }.groupValues[1]
+        assertEquals("$APPLICATION_ID/${DebugNotificationCleaner::class.java.name}", listener)
+        assertEquals("$APPLICATION_ID.capture.DebugNotificationCleaner", DebugNotificationCleaner::class.java.name)
+        assertTrue(".capture.DebugNotificationCleaner" in MAIN_COMPONENTS)
+    }
+
+    @Test
+    fun theRecorderSendsTheExtrasTheServiceReads() {
+        listOf(
+            "\"--es\", \"token\"" to CallMonitorService.EXTRA_TOKEN,
+            "\"--es\", \"recfile\"" to CallMonitorService.EXTRA_RECFILE,
+            "\"--ez\", \"incoming\"" to CallMonitorService.EXTRA_INCOMING,
+            "command.add(\"app\")" to CallMonitorService.EXTRA_APP,
+            "\"--es\", \"cable\"" to CallMonitorService.EXTRA_CABLE,
+            "\"--ez\", \"test\"" to CallMonitorService.EXTRA_TEST,
+            "\"--el\", \"started\"" to CallMonitorService.EXTRA_STARTED,
+            "\"--ez\", \"for_good\"" to CallMonitorService.EXTRA_FOR_GOOD,
+            "\"--ez\", \"joined\"" to CallMonitorService.EXTRA_JOINED,
+        ).forEach { (sent, read) ->
+            assertTrue("the recorder no longer sends $sent", sent in Repo.recorder)
+            assertTrue("the service reads \"$read\", the recorder sends $sent", "\"$read\"" in sent)
+        }
+    }
+
+    @Test
+    fun everyComponentTheToolsNameIsDeclared() {
+        val named = Repo.file("tools").listFiles { f -> f.extension == "py" }!!
+            .flatMap { Regex("""(?:\{PKG}|com\.adiraimaji\.amcallassistant)/(\.[\w.]+)""").findAll(it.readText()).map { m -> m.groupValues[1] } }
+            .toSet()
+        assertTrue("the tools name nothing: is the pattern stale?", named.isNotEmpty())
+        assertEquals(emptySet<String>(), named - MAIN_COMPONENTS - DEBUG_COMPONENTS)
+    }
+
+    private fun components(path: String): Set<String> {
+        val document = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+            .newDocumentBuilder().parse(Repo.file(path))
+        return listOf("application", "activity", "activity-alias", "service", "receiver", "provider")
+            .flatMap { tag ->
+                val nodes = document.getElementsByTagName(tag)
+                (0 until nodes.length).map { nodes.item(it).attributes.getNamedItemNS(ANDROID, "name")?.nodeValue }
+            }
+            .filterNotNull()
+            .toSet()
+    }
+
+    private fun fullName(name: String) = if (name.startsWith(".")) APPLICATION_ID + name else name
+
+    private companion object {
+        const val ANDROID = "http://schemas.android.com/apk/res/android"
+        const val APPLICATION_ID = "com.adiraimaji.amcallassistant"
+
+        val MAIN_COMPONENTS = setOf(
+            ".AmCallAssistantApp",
+            ".MainActivity",
+            ".RecordPromptActivity",
+            ".TurnOffQuestionActivity",
+            ".capture.AfterCallReceiver",
+            ".capture.BootReceiver",
+            ".capture.CallMonitorService",
+            ".capture.CallTracker",
+            ".capture.DebugNotificationCleaner",
+            ".capture.NetworkReviveReceiver",
+            ".capture.PlaybackService",
+            ".ui.PairingService",
+            ".ui.RecorderTile",
+            ".tasker.AnswerEditActivity",
+            ".tasker.FireReceiver",
+            ".tasker.MainEditActivity",
+            ".recordings.RecordingsFileProvider",
+        )
+
+        val DEBUG_COMPONENTS = setOf(
+            ".diag.DemoProvider",
+            ".diag.FakeAppCallService",
+            ".diag.SpikeReceiver",
+        )
+
+        val WORKERS = listOf(
+            "com.adiraimaji.amcallassistant.capture.RecorderKeepAlive",
+            "com.adiraimaji.amcallassistant.capture.UsbDebuggingWatch",
+        )
+    }
+}

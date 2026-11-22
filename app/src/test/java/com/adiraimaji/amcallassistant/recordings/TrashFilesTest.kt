@@ -1,0 +1,84 @@
+package com.adiraimaji.amcallassistant.recordings
+
+import android.net.Uri
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.ConscryptMode
+import java.io.File
+
+/** Recently deleted's two buttons, on recordings trashed as files - app
+ *  storage's way, a rename: Restore all puts every one back under its own
+ *  name; Delete all for good leaves none. */
+@RunWith(RobolectricTestRunner::class)
+@ConscryptMode(ConscryptMode.Mode.OFF)
+@Config(sdk = [36])
+class TrashFilesTest {
+
+    private val app = RuntimeEnvironment.getApplication()
+    private val folder = File(app.filesDir, "recordings").apply { mkdirs() }
+
+    private fun trashed(name: String): Recording {
+        val file = File(folder, Trash.nameFor(name, expiresAtMillis = System.currentTimeMillis() + 86_400_000L))
+        file.writeText("not audio")
+        return Recording(
+            name = name, uri = Uri.fromFile(file), whenLabel = "", incoming = true,
+            durationLabel = "0:10", sizeLabel = "1 KB", filePath = file.absolutePath,
+        )
+    }
+
+    @Test fun restoreAllPutsEveryOneBackUnderItsOwnName() {
+        val two = listOf(trashed("20261020_101010_in.ogg"), trashed("20261021_111111_out.ogg"))
+        val result = Trash.restoreAll(app, two)
+        assertEquals(2, result.deleted)
+        assertEquals(0, result.failed)
+        assertNull(result.needsConsent)
+        assertTrue(File(folder, "20261020_101010_in.ogg").exists())
+        assertTrue(File(folder, "20261021_111111_out.ogg").exists())
+        assertFalse(folder.listFiles()!!.any { Trash.isTrashedName(it.name) })
+    }
+
+    @Test fun deleteAllForGoodLeavesNone() {
+        val two = listOf(trashed("20261020_101010_in.ogg"), trashed("20261021_111111_out.ogg"))
+        val result = Trash.deleteForGood(app, two)
+        assertEquals(2, result.deleted)
+        assertEquals(0, result.failed)
+        assertTrue(folder.listFiles()!!.isEmpty())
+    }
+
+    @Test fun aRecordingThatLeavesTheListTakesItsShareCopy() {
+        // Share's .m4a of a call is a copy of the call: deleted for good, or
+        // trashed, the recording takes it along, once no app may still be
+        // reading it; another's copy stays.
+        val shares = ShareCopies.dir(app)!!.apply { mkdirs() }
+        val read = System.currentTimeMillis() - ShareCopies.IN_FLIGHT_MS - 60_000
+        val doomed = trashed("20261020_101010_in.ogg")
+        val copy = ShareCopies.of(shares, doomed.name).apply { writeText("aac"); setLastModified(read) }
+        val other = ShareCopies.of(shares, "20261021_111111_out.ogg").apply { writeText("aac"); setLastModified(read) }
+        Trash.deleteForGood(app, listOf(doomed))
+        assertFalse(copy.exists())
+        assertTrue(other.exists())
+
+        val file = File(folder, "20261021_111111_out.ogg").apply { writeText("not audio") }
+        assertEquals(DeleteResult.Deleted, Trash.trash(app, Uri.fromFile(file), file.absolutePath, file.name))
+        assertFalse(other.exists())
+    }
+
+    @Test fun oneAlreadyGoneCountsAsDeleted() {
+        val gone = trashed("20261020_101010_in.ogg").also { File(it.filePath!!).delete() }
+        assertEquals(1, Trash.deleteForGood(app, listOf(gone)).deleted)
+    }
+
+    @Test fun trashingOneAlreadyGoneCountsAsDone() {
+        // Gone already is where the trash would have taken it.
+        val file = File(folder, "20261020_101010_in.ogg")
+        assertEquals(DeleteResult.Deleted, Trash.trash(app, Uri.fromFile(file), file.absolutePath, file.name))
+        assertTrue(folder.listFiles()!!.isEmpty())
+    }
+}

@@ -1,0 +1,353 @@
+package com.adiraimaji.amcallassistant.ui
+
+import android.app.Notification
+import android.app.NotificationManager
+import android.app.RemoteInput
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.IBinder
+import android.os.SystemClock
+import android.util.Log
+import com.adiraimaji.amcallassistant.adb.AdbTransport
+import com.adiraimaji.amcallassistant.setup.PairingNotification
+import com.adiraimaji.amcallassistant.setup.Setup
+import com.adiraimaji.amcallassistant.system.GlobalSettings
+import io.github.muntashirakon.adb.android.AdbMdns
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/**
+ * Pairs, then WAITS for the phone to become reachable, then finishes setup -
+ * as a foreground service, under the pairing notification.
+ *
+ * WHY A SERVICE, AND WHY IT WAITS
+ *
+ * This used to be a BroadcastReceiver that paired and then took one shot at
+ * connecting. On this phone that is a coin toss, because the two switches the
+ * connect depends on - USB debugging and Wireless debugging - do not reliably
+ * hold after being flipped in Settings. USB debugging in particular switches
+ * ITSELF off shortly after being turned on with no cable attached, in whatever
+ * order the two are flipped (measured across several fresh-install runs), and
+ * with it gone Wireless debugging drops. The cause, found later: the phone's
+ * Settings app switches it off each time the Developer options screen is
+ * shown, which a user coming back from Wireless debugging always does (see
+ * UsbDebuggingWatch). Pairing itself always succeeds; only
+ * the connect finds nothing to reach. Every miss then cost the user a whole
+ * re-pair: the dialog, a fresh code, the notification again.
+ *
+ * So this does not take a shot. Having paired - a one-way door, adbd keeps the
+ * key - it sits and watches both settings, tells the user in this same
+ * notification exactly which switch is off RIGHT NOW, and connects the moment
+ * both are on. The user fixes a switch once; nothing is re-typed.
+ *
+ * A foreground service because the user is over in Settings while this runs,
+ * and a backgrounded process here is frozen by iAware within seconds. The
+ * shortService type on Android 14+ is built for exactly this - a bounded job
+ * that must not be killed part-way - and needs no extra permission. It is the
+ * same shape as Shizuku's AdbPairingService, which is why the notification's
+ * action points straight at this service rather than through a receiver: the
+ * system starts it as the result of the tap, so a background start is never
+ * in question.
+ */
+class PairingService : Service() {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var lastText: String? = null
+
+    @Volatile
+    private var running = false
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Foreground FIRST, inside the window the system allows for it, under
+        // the pairing notification itself - one card for the whole of pairing.
+        promote(PairingNotification.build(this, "Pairing…", withReply = false))
+
+        if (running) {
+            // A second tap on Enter code while the first is in flight would
+            // pair twice. The first run's card already says what is happening.
+            return START_NOT_STICKY
+        }
+
+        val code = pairingCodeFrom(
+            intent?.let { RemoteInput.getResultsFromIntent(it) }
+                ?.getCharSequence(PairingNotification.KEY_CODE),
+        )
+
+        if (code == null) {
+            finishWith("That was not six digits. Try again.", withReply = true)
+            return START_NOT_STICKY
+        }
+
+        running = true
+        run = scope.launch {
+            try {
+                run(code)
+            } finally {
+                running = false
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun promote(notification: Notification) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    PairingNotification.NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE,
+                )
+            } else {
+                startForeground(PairingNotification.NOTIFICATION_ID, notification)
+            }
+        } catch (t: Throwable) {
+            // Shizuku's fallback, for the same reason: if the platform refuses
+            // the foreground start (a background-start restriction, or a policy
+            // on the type), the pairing must still proceed and the user must
+            // still see the card. Post it plainly and carry on; the work runs at
+            // background priority, which is worse than foreground but far better
+            // than a crash with the code already typed.
+            Log.e(TAG, "pairing service: startForeground refused, continuing plain", t)
+            getSystemService(NotificationManager::class.java)
+                .notify(PairingNotification.NOTIFICATION_ID, notification)
+        }
+    }
+
+    private suspend fun run(code: String) {
+        val app = applicationContext
+        try {
+            // Discovered, not typed. The port changes every time the dialog is
+            // opened and means nothing to anyone.
+            val port = steps.discover(app)
+            if (port == null) {
+                finishWith(
+                    "No pairing dialog found. Open it in Settings and tap Enter code again.",
+                    withReply = true,
+                )
+                return
+            }
+
+            if (!steps.pair(app, port, code)) {
+                finishWith(
+                    "Pairing failed. Reopen the dialog for a fresh code and try again.",
+                    withReply = true,
+                )
+                return
+            }
+            stage = Stage.CONNECTING
+
+            // One-way door: adbd keeps the key. From here a connect that does not
+            // land is "come back and finish", never "pair again" - the app reads
+            // this to show the short reconnect card instead of the pairing flow.
+            Setup.markPaired(app)
+
+            if (!steps.connect(this, app)) {
+                finishWith(timedOut(Stage.CONNECTING), withReply = false)
+                return
+            }
+
+            stage = Stage.FINISHING
+            say("Paired. Starting the recorder…")
+            if (steps.finish(app)) {
+                Log.i(TAG, "pairing service: done")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                PairingNotification.dismiss(app)
+                stopSelf()
+            } else {
+                finishWith(
+                    "Paired, but the recorder did not start. Reopen AM Call Assistant - it will " +
+                        "finish on its own.",
+                    withReply = false,
+                )
+            }
+        } catch (t: Throwable) {
+            val said = failureText(t) ?: throw t
+            Log.e(TAG, "pairing service: failed", t)
+            finishWith(said, withReply = false)
+        }
+    }
+
+    /**
+     * Watch both switches and connect the moment both are on.
+     *
+     * Returns false only at the deadline. A connect attempt that fails just goes
+     * round again, because the usual reason is that a switch dropped during it -
+     * and the next reading says which one, in the card, where the user is
+     * looking. The deadline sits under shortService's cap so the normal ending
+     * is this method's, not the system's.
+     */
+    internal suspend fun waitAndConnect(app: Context): Boolean {
+        val deadline = SystemClock.elapsedRealtime() + WAIT_MS
+        while (SystemClock.elapsedRealtime() < deadline) {
+            // UNKNOWN where Android 17 hides USB debugging: never waited on,
+            // only mentioned, because the reading would never change.
+            val usb = Setup.usbDebugging(app)
+            val usbOff = usb == GlobalSettings.Reading.OFF
+            val wd = Setup.wirelessDebuggingOn(app)
+            when {
+                usbOff && !wd -> say(
+                    "Paired! In Developer options turn on USB debugging and " +
+                        "Wireless debugging - any order. I connect the moment both are on."
+                )
+                usbOff -> say(
+                    "Paired! USB debugging switched itself off - turn it on again " +
+                        "(a couple of rows above Wireless debugging). I connect the " +
+                        "moment it is on."
+                )
+                !wd && usb == GlobalSettings.Reading.UNKNOWN -> say(
+                    "Paired! Wireless debugging is off - turn it on again, and USB " +
+                        "debugging too if it is not on. I connect the moment it is on."
+                )
+                !wd -> say(
+                    "Paired! Wireless debugging switched itself off - turn it on " +
+                        "again. I connect the moment it is on."
+                )
+                else -> {
+                    say(
+                        if (usb == GlobalSettings.Reading.UNKNOWN) {
+                            "Paired. Connecting… If this takes long, check that USB " +
+                                "debugging is on too."
+                        } else {
+                            "Paired. Connecting…"
+                        }
+                    )
+                    if (AdbTransport.autoConnect(app, timeoutMs = 5_000).isSuccess) return true
+                }
+            }
+            delay(POLL_MS)
+        }
+        return false
+    }
+
+    /**
+     * Update the card only when the words change. Every notify() re-renders,
+     * and a shade that flickers once a second is worse than none.
+     */
+    private fun say(text: String) {
+        if (text == lastText) return
+        lastText = text
+        getSystemService(NotificationManager::class.java).notify(
+            PairingNotification.NOTIFICATION_ID,
+            PairingNotification.build(this, text, withReply = false),
+        )
+    }
+
+    /**
+     * Leave a final message on the card and stop - DETACHED, so the message
+     * outlives the service instead of vanishing with it.
+     */
+    private fun finishWith(text: String, withReply: Boolean) {
+        stopForeground(STOP_FOREGROUND_DETACH)
+        PairingNotification.show(this, text, withReply)
+        stopSelf()
+    }
+
+    /**
+     * shortService's backstop: the system calls this just before its cap and
+     * then kills the service. Leaving a message beats an ANR. WAIT_MS is set
+     * under the cap, so this should never be the normal ending.
+     */
+    override fun onTimeout(startId: Int) {
+        // Nothing paired yet: the code field again, as for a failed pairing.
+        finishWith(timedOut(stage), withReply = stage == Stage.PAIRING)
+    }
+
+    /** How far a pairing has gone: what the cap cuts short is said by it. */
+    internal enum class Stage { PAIRING, CONNECTING, FINISHING }
+
+    @Volatile private var stage = Stage.PAIRING
+
+    /** The pairing under way, for a test to wait for its end. */
+    @Volatile internal var run: kotlinx.coroutines.Job? = null
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    /**
+     * The pairing's steps that reach outside AM Call Assistant - adbd's pairing service
+     * found and paired with, the connect, setup's last step - each as run did
+     * them; a test puts its own in their place to hold the service at one.
+     */
+    internal interface Steps {
+        suspend fun discover(app: Context): Int?
+        suspend fun pair(app: Context, port: Int, code: String): Boolean
+        suspend fun connect(service: PairingService, app: Context): Boolean
+        suspend fun finish(app: Context): Boolean
+    }
+
+    internal object RealSteps : Steps {
+        override suspend fun discover(app: Context): Int? =
+            AdbTransport.discoverPort(app, AdbMdns.SERVICE_TYPE_TLS_PAIRING, timeoutMs = 15_000)
+
+        override suspend fun pair(app: Context, port: Int, code: String): Boolean =
+            AdbTransport.pair(app, AdbTransport.LOOPBACK, port, code).isSuccess
+
+        override suspend fun connect(service: PairingService, app: Context): Boolean =
+            service.waitAndConnect(app)
+
+        override suspend fun finish(app: Context): Boolean = Setup.finish(app).isSuccess
+    }
+
+    internal companion object {
+        private const val TAG = "AMCallAssistant"
+
+        /** The steps run takes: the real ones, except in a test. */
+        @Volatile internal var steps: Steps = RealSteps
+
+        /** Under shortService's three-minute cap, with margin. */
+        private const val WAIT_MS = 150_000L
+        private const val POLL_MS = 1_000L
+    }
+}
+
+/**
+ * The six digits out of whatever was typed into the reply field. "123 456",
+ * "123-456", a stray letter from the keyboard's autocorrect: all fine. Five
+ * digits or seven are not a code, and null says so.
+ */
+internal fun pairingCodeFrom(text: CharSequence?): String? =
+    text?.toString()?.filter(Char::isDigit)?.takeIf { it.length == 6 }
+
+/**
+ * What the pairing notification says when the pairing ran out of time, by
+ * how far it had gone: still pairing - libadb's pair has no time limit of
+ * its own, and nothing is paired yet - connecting, or in setup's last step,
+ * after the connect. One text served all three: "Paired! I could not
+ * connect in time ... it will say which switch to turn on", false in the
+ * first and the last.
+ */
+internal fun timedOut(stage: PairingService.Stage): String = when (stage) {
+    PairingService.Stage.PAIRING ->
+        "Pairing did not finish in time. Reopen the dialog for a fresh code and try again."
+    PairingService.Stage.CONNECTING ->
+        "Paired! I could not connect in time. Reopen AM Call Assistant to finish - it " +
+            "will say which switch to turn on. No need to pair again."
+    PairingService.Stage.FINISHING ->
+        "Paired, but setup did not finish in time. Reopen AM Call Assistant - it will finish " +
+            "on its own. No need to pair again."
+}
+
+/**
+ * What the pairing notification says after [t] ended a pairing; null for a
+ * cancellation, which is the service being stopped and is thrown on. Android
+ * stops a shortService at its cap with onTimeout, whose own words are put up
+ * first: the cancellation that followed replaced them with "Something went
+ * wrong: Job was cancelled" (read from the code, 2026-11-14).
+ */
+internal fun failureText(t: Throwable): String? =
+    if (t is kotlin.coroutines.cancellation.CancellationException) {
+        null
+    } else {
+        "Something went wrong: ${t.message}"
+    }

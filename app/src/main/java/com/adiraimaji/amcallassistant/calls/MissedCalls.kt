@@ -1,0 +1,213 @@
+package com.adiraimaji.amcallassistant.calls
+
+import android.app.Notification
+import android.app.PendingIntent
+import android.content.Context
+import android.util.Log
+import androidx.core.content.edit
+import com.adiraimaji.amcallassistant.DeepLink
+import com.adiraimaji.amcallassistant.Prefs
+import com.adiraimaji.amcallassistant.capture.AfterCallReceiver
+import com.adiraimaji.amcallassistant.capture.CaptureDaemon
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+
+/**
+ * Calls that should have been recorded and were not, said out loud.
+ *
+ * WHY THIS, ON TOP OF THE SELF-TEST
+ *
+ * The self-test answers "would a call be recorded right now?" when someone
+ * thinks to ask. The complaint every call recorder's reviews are full of is
+ * the other question - "was that call recorded?" - asked weeks later, on the
+ * day the recording was needed, about a call that was not. Whatever the cause
+ * (a recorder that died, a watch that went deaf, a hang-up that never reached
+ * the app), the phone's own call log knows the call happened. So after each
+ * save and at every keep-alive tick, the log is held against what was
+ * recorded, and a call with nothing to show for it is reported once, while it
+ * can still matter.
+ *
+ * ONLY WHERE A RECORDING WAS OWED
+ *
+ * Automatic mode only - in ask-first a call without a recording is usually one
+ * the user said no to. Only calls since the user last changed the recorder
+ * switch or the mode, because a call made while it was off is not a missed
+ * one. Only calls long enough to have been worth it, and over long enough ago
+ * that the save had its chance. Only with call-log access, which is optional;
+ * without it this does nothing and the self-test says it could not check.
+ *
+ * What counts as recorded is the ledger (see CallLedger), not the files on
+ * disk, so deleting a recording never makes its call look missed.
+ */
+internal object MissedCalls {
+
+    private const val TAG = "AMCallAssistant"
+    private const val NOTIFICATION_ID = 32
+    private const val KEY_COVERED_SINCE = "calls_covered_since"
+    private const val KEY_SEEN_UNTIL = "missed_seen_until"
+
+    /** Shorter calls are mostly hang-ups, and a false alarm costs more than
+     *  a five-second call. */
+    internal const val MIN_SECONDS = 5
+
+    /** The save gets this long after the call to land, plus a minute for the
+     *  ringing the log does not count. */
+    internal const val SETTLE_MS = 3L * 60 * 1000
+
+    /** A call during a recording - call waiting - lands in that recording. */
+    internal const val SPAN_SLACK_MS = CallMatch.SPAN_SLACK_MS
+
+    /** Reported calls stay listed this long unless the notification is cleared. */
+    private const val LIST_FOR_MS = 24L * 60 * 60 * 1000
+
+    /** The recorder switch or the mode changed: calls before now were made
+     *  under other rules and are not this check's business. */
+    fun coverageChanged(context: Context) {
+        Prefs.of(context).edit { putLong(KEY_COVERED_SINCE, System.currentTimeMillis()) }
+        // The Calls tab's record of it, for saying why a call went unrecorded.
+        CoverageHistory.note(context)
+    }
+
+    private fun coveredSince(context: Context): Long {
+        val prefs = Prefs.of(context)
+        val stored = prefs.getLong(KEY_COVERED_SINCE, 0L)
+        if (stored > 0L) return stored
+        // First run of this check on this phone: nothing before it was ever
+        // promised, so nothing before it is reported.
+        val now = System.currentTimeMillis()
+        prefs.edit { putLong(KEY_COVERED_SINCE, now) }
+        return now
+    }
+
+    suspend fun check(context: Context) {
+        if (!CallLogLookup.granted(context)) return
+        if (!CoverageHistory.automatic(context)) return
+        // A call in progress is not in the log yet, and its recording is not
+        // saved yet. Ask again after it - and after a ring: Android mutes
+        // every notification while telephony is not idle (AOSP
+        // NotificationAttentionHelper.disableNotificationEffects), so the
+        // notice was never heard (review round 13).
+        if (CaptureDaemon.callInProgress(context)) return
+        val covered = coveredSince(context)
+        // Anything still on the daemon will be saved; it counts as recorded.
+        // A daemon that cannot be asked cannot vouch for anything, so the
+        // check waits for one that can - the recorder-down alert covers the
+        // meantime, and the calls it missed are reported once it is back.
+        val pending = CaptureDaemon.listPendingOrNull(context) ?: return
+        val now = System.currentTimeMillis()
+        val calls = CallLogLookup.answeredCallsSince(context, maxOf(covered, now - CallLedger.KEEP_MS))
+        val missed = unrecorded(calls, CallLedger.read(context), CallMatch.pendingRecorded(pending), covered, now)
+        if (missed.isEmpty()) return
+        Log.w(TAG, "missed: ${missed.size} call(s) with no recording: ${missed.joinToString { it.at.toString() }}")
+        missed.forEach { CallLedger.noteReported(context, it.at) }
+        notify(context, calls, now)
+    }
+
+    /**
+     * The calls in [calls] that should have a recording and do not.
+     *
+     * A recording accounts for its own call - the closest of its way where
+     * the call log's date says it could have started, a part joined
+     * mid-call from its call's start, which the saver found - and for any
+     * call that began while it was running - call waiting puts the second
+     * call into the first one's recording (CallMatch.accounted). A pending
+     * one ([pending], length unknown) accounts by its start only; one joined
+     * mid-call, for the call it began during, either way.
+     */
+    internal fun unrecorded(
+        calls: List<CallLogLookup.LoggedCall>,
+        ledger: CallLedger.Ledger,
+        pending: List<CallLedger.Recorded>,
+        coveredSince: Long,
+        now: Long,
+    ): List<CallLogLookup.LoggedCall> {
+        // A call the rules left out was recorded and thrown away on purpose.
+        val accounted = CallMatch.accounted(ledger.accounted + pending, calls, { it.at }, { it.seconds }, { it.incoming })
+        return calls.filter { call ->
+            call.at > coveredSince &&
+                call.seconds >= MIN_SECONDS &&
+                call.at + call.seconds * 1000L + SETTLE_MS <= now &&
+                call.at !in ledger.reported &&
+                call !in accounted
+        }
+    }
+
+    /** The reported calls the user has not cleared yet, newest first. */
+    private fun notify(context: Context, calls: List<CallLogLookup.LoggedCall>, now: Long) {
+        val seenUntil = Prefs.of(context).getLong(KEY_SEEN_UNTIL, 0L)
+        val reported = CallLedger.read(context).reported
+        val listed = calls
+            .filter { it.at in reported && it.at > seenUntil && it.at > now - LIST_FOR_MS }
+            .sortedByDescending { it.at }
+        if (listed.isEmpty()) return
+
+        val title = if (listed.size == 1) "A call was not recorded" else "${listed.size} calls were not recorded"
+        val lines = listed.map { "${it.label}, ${at(it.at)}, ${AfterCall.length(it.seconds.toDouble())}" }
+        val body = lines.take(5).joinToString("\n") +
+            (if (lines.size > 5) "\n…and ${lines.size - 5} more" else "") +
+            "\n\nRun the self-test to see why."
+        val selfTest = PendingIntent.getActivity(
+            context, 3201, DeepLink.intent(context, DeepLink.Kind.SELF_TEST, LINK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        // The tap: the Calls tab, where each of these calls says it was not
+        // recorded; the button runs the self-test.
+        val calls = PendingIntent.getActivity(
+            context, 3202, DeepLink.intent(context, DeepLink.Kind.CALLS),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val notification = AfterCall.problem(context, title, body, calls, "Self-test" to selfTest, collapsed = lines.first())
+            .setDeleteIntent(seen(context))
+            .setOnlyAlertOnce(true)
+            // Callers' names are not for the lock screen: there it says only
+            // how many calls went unrecorded.
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setPublicVersion(
+                Notification.Builder(context, AfterCall.PROBLEM_CHANNEL_ID)
+                    .setSmallIcon(android.R.drawable.stat_notify_error)
+                    .setContentTitle(title)
+                    .build(),
+            )
+            .build()
+        AfterCall.notifyProblem(context, NOTIFICATION_ID, notification, "missed")
+    }
+
+    /** Dismissing the notification clears its list; the next miss starts a
+     *  new one rather than bringing the old calls back. */
+    private fun seen(context: Context): PendingIntent =
+        PendingIntent.getBroadcast(
+            context, 3202,
+            android.content.Intent(context, AfterCallReceiver::class.java).setAction(ACTION_SEEN),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+    const val ACTION_SEEN = "com.adiraimaji.amcallassistant.missed.SEEN"
+
+    /** Its Self-test's mark: the self-test from this notification, which
+     *  takes it down, and not from another's (MainViewModel). */
+    const val LINK = "missed"
+
+    fun markSeen(context: Context) {
+        Prefs.of(context).edit { putLong(KEY_SEEN_UNTIL, System.currentTimeMillis()) }
+    }
+
+    /** The user acted on it - its Self-test button does not take it down on
+     *  its own the way a tap on its body does. */
+    fun dismiss(context: Context) {
+        markSeen(context)
+        AfterCall.cancelProblem(context, NOTIFICATION_ID)
+    }
+
+    /** "14:05" today, "3 Oct 14:05" before that: Latin digits and English
+     *  months, as the rest of AM Call Assistant's times, among the notification's
+     *  English words. */
+    internal fun at(millis: Long, now: Long = System.currentTimeMillis()): String {
+        val then = Calendar.getInstance().apply { timeInMillis = millis }
+        val day = Calendar.getInstance().apply { timeInMillis = now }
+        val today = then.get(Calendar.YEAR) == day.get(Calendar.YEAR) &&
+            then.get(Calendar.DAY_OF_YEAR) == day.get(Calendar.DAY_OF_YEAR)
+        return SimpleDateFormat(if (today) "HH:mm" else "d MMM HH:mm", Locale.US).format(Date(millis))
+    }
+}

@@ -1,0 +1,93 @@
+# shellserver
+
+The shell-side capture daemon: an audio-only fork of scrcpy v4.1 (Apache-2.0)
+plus the files of our own in `src/com/adiraimaji/amcallassistant/shell`.
+
+It runs as the **shell UID**, and that is the whole reason it is a separate
+program rather than a class in the app. Capturing call audio needs
+`CAPTURE_VOICE_COMMUNICATION_OUTPUT`, which `com.android.shell` holds and an
+ordinary app cannot get. On top of that, the capture path calls `startActivity`
+and `forceStopPackage` on `com.android.shell` itself to satisfy the "must be in
+the foreground to record" check, which only a process already running as that
+UID may do.
+
+**23 files kept, 67 dropped.** See [PATCHES.md](PATCHES.md) for every change
+against upstream and why each one exists.
+
+## Build
+
+```
+./build.sh
+```
+
+On Windows, run the PowerShell twin instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+The Gradle `buildShellServer` task chooses the right one for the platform, so
+Android Studio and `gradlew` need no separate step.
+
+`javac` against platform 36, then `d8`, into `amcallassistant-capture.jar`
+(about 85 KB). `ANDROID_PLATFORM` and `BUILD_TOOLS` are overridable but default
+to 36 and 36.0.0.
+
+`ANDROID_PLATFORM` is the `android.jar` this compiles against, not the platform
+a phone runs: one jar runs on every Android from 12 (`d8 --min-api 31`). The
+framework's hidden parts are reached by reflection or through stubs compiled
+with it, and `:daemon-lint` checks each call against Android 12. It stays
+pinned because the jar's bytes depend on it (constants are compiled in), and
+F-Droid's rebuild must make the same bytes.
+
+## Run
+
+```
+adb push amcallassistant-capture.jar /data/local/tmp/amcallassistant-capture.jar
+adb shell 'nohup sh -c "CLASSPATH=/data/local/tmp/amcallassistant-capture.jar \
+    exec app_process / com.adiraimaji.amcallassistant.shell.Main" \
+    > /data/local/tmp/amcallassistant-capture.out 2>&1 &'
+```
+
+`Main [port]` - port defaults to 28472. A daemon started by hand like this has
+no token (the app passes it in the environment), so it refuses every command but
+a bare ping - see Protocol.
+
+It then listens on `127.0.0.1:28472` and stays. Started once, it outlives the
+ADB connection that launched it, which is the entire point: with Wi-Fi off adbd
+tears its listener down and the shell UID cannot pin a fixed port, so there is
+no ADB available at the moment a call arrives.
+
+TCP on loopback specifically, because SELinux refuses an `untrusted_app`
+connecting to the shell domain's abstract unix socket, and a filesystem socket
+would have to live under `/data/local/tmp`, which the app cannot traverse.
+
+## Protocol
+
+Every connection but a bare ping (`P`, answered `PONG <version> <build>`)
+starts with a handshake in both directions, proved with the token the app
+passes in the environment (`A`; `Handshake`), then one command byte. The
+commands are in `Commands.run`, their bytes and replies in `Wire`. Every reply
+that is a line of text is listed in `tests/fixtures/protocol.txt`: the app's
+ProtocolTest reads each with the app's parsers, and WireTest builds each with
+`Wire`. One handshake worked by hand, `tests/fixtures/handshake.txt`, holds
+both sides' proofs (HandshakeTest, on each side).
+
+The audio a capture (`R`) streams is scrcpy's format, unchanged:
+
+```
+4 bytes   codec id, ASCII ("opus")
+repeating:
+  8 bytes pts, big endian, flags in the top 3 bits
+  4 bytes payload length
+  n bytes payload
+```
+
+One `R` connection is one capture, and there is no stop command for it: the
+encoder writes into the socket, so the app closing its end is what ends it.
+Calls are recorded by the daemon itself, into files the app fetches (`F`).
+
+## Verifying a device
+
+The app's Settings > Diagnostics > Self-test opens a real capture (`R`) over the
+path a call takes and says what came out of it, both directions included.

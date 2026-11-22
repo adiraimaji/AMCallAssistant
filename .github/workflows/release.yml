@@ -1,0 +1,319 @@
+# Publishes a GitHub Release with a signed APK attached. Normally that happens
+# when a merge to main brings a version not yet released: this workflow then
+# makes the tag itself. A version tag pushed by hand, or a release made with
+# "Create a new release" in the web UI, gets the same treatment.
+#
+# Releases exist here because workflow ARTIFACTS require a signed-in GitHub
+# account to download, while release assets do not - so this is the one that
+# gives anybody a link they can tap on a phone. There is no Play listing and
+# there will not be one: Play forbade call recorders in 2022.
+#
+# THE KEY IS THE WHOLE POINT. An APK signed by a different certificate cannot
+# install over an earlier one, whatever its version number - so a release built
+# with the runner's throwaway debug key would strand every person who installed
+# it. Four secrets are required, and the job fails loudly rather than falling
+# back to anything:
+#   AMCA_KEYSTORE_BASE64    the .jks, base64-encoded
+#   AMCA_KEYSTORE_PASSWORD
+#   AMCA_KEY_ALIAS
+#   AMCA_KEY_PASSWORD
+# The keystore itself never enters the repo - see .gitignore, which has refused
+# signing material since before any existed.
+name: release
+
+on:
+  push:
+    # A version lives in gradle.properties, so only a merge that touches that
+    # file can bring a new one. GitHub ignores path filters on tag pushes, so
+    # this filter does not stop the tags below from running.
+    branches: [main]
+    paths: [gradle.properties]
+    # Accept both tag styles. The convention here is a bare "0.2", but a "v0.2"
+    # that silently did nothing would be worse than accepting both.
+    tags: ['v[0-9]*', '[0-9]*']
+  release:
+    types: [published]
+
+# Creating a release from the web UI fires both the tag push and the release
+# event, so two runs can start for the same tag. They are queued, not
+# cancelled, and the publish step is safe to run twice. The tag that this
+# workflow pushes or moves itself starts no run, because GitHub does not start
+# workflows from GITHUB_TOKEN pushes.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # WHICH VERSION TO RELEASE, IF ANY, AND FROM WHICH COMMIT.
+  #
+  # A merge to main is released from its own commit when the version in its
+  # gradle.properties is not released yet. The publish step makes the tag,
+  # and only once the APK exists. Nobody types a tag.
+  #
+  # Hand-made tags went wrong twice. One went up with a push of main that was
+  # refused, so it named a commit nothing else could see. One (0.9) went up
+  # before the bump's pull request merged, so it named the version before. A
+  # tag made from main's own push can be neither.
+  #
+  # A tag pushed by hand still builds, for a re-run or an emergency, but only
+  # from a commit on main. That commit is the one F-Droid builds and the one
+  # the APK's version-control stamp names.
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+      sha: ${{ steps.decide.outputs.sha }}
+    steps:
+      # Full history and every tag. merge-base and reading gradle.properties
+      # at a tag both need more than the single commit fetched by default.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # "Already released" means a release that has its APK, not just a tag.
+      # A tag can exist without a release when a run failed after the tag was
+      # made or moved, and "Re-run all jobs" has to finish that release rather
+      # than skip it.
+      - id: decide
+        name: Decide what to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version_at() { git show "$1:gradle.properties" | sed -n 's/^amVersionName=//p'; }
+          released() {
+            local names
+            names=$(gh release view "$1" --json assets --jq '.assets[].name' 2>/dev/null) || return 1
+            grep -qxF "AM-Call-Assistant.apk" <<<"$names"
+          }
+
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            TAG="$GITHUB_REF_NAME"
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::Tag '$TAG' is on $GITHUB_SHA, which is not on main. Delete it (git push origin :refs/tags/$TAG). Merging the version bump to main releases it."
+              exit 1
+            fi
+            # Whether the tag matches gradle.properties is checked by the release job.
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG=$(version_at HEAD)
+          if released "$TAG"; then
+            echo "$TAG is already released. Nothing to do: this merge changed gradle.properties but not the version."
+            exit 0
+          fi
+          SHA="$GITHUB_SHA"
+          if TAGGED=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}"); then
+            if [ "$(version_at "$TAGGED")" = "$TAG" ]; then
+              # Tagged at the right version but never published, so a release
+              # run failed. Finish it from the commit the tag names, because
+              # that commit is what F-Droid will build.
+              SHA="$TAGGED"
+            else
+              # The tag names a commit at another version, so it was pushed
+              # before the bump merged. The release job refuses such a tag,
+              # so it can never be a release. It would otherwise block this
+              # one, so move it to this merge, the commit that makes it true.
+              echo "::warning::Tag '$TAG' was on $TAGGED, where gradle.properties says $(version_at "$TAGGED"). Moving it to $GITHUB_SHA, the merge that brings $TAG."
+              git push --force origin "$GITHUB_SHA:refs/tags/$TAG"
+            fi
+          fi
+          echo "$TAG has no release yet. Releasing it from $SHA."
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  # THE COMMIT'S OWN CHECKS FIRST. build.yml runs on the same push - the
+  # tests, lint, Error Prone, the R8 constructors and 16 KB checks - and a
+  # release used to be signed and published beside it, waiting for none of
+  # them: a red commit could be released. Now it waits for that run, an hour
+  # at most, and goes on only if it passed.
+  checked:
+    needs: decide
+    if: needs.decide.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for build.yml on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.decide.outputs.sha }}
+        run: |
+          for i in $(seq 1 120); do
+            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs?head_sha=$SHA&event=push" \
+              --jq '.workflow_runs[0] | "\(.status) \(.conclusion)"' 2>/dev/null || true)
+            case "$run" in
+              "completed success") echo "build.yml passed on $SHA."; exit 0 ;;
+              completed*) echo "::error::build.yml on $SHA ended $run: not released."; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "::error::build.yml on $SHA did not finish within an hour: not released."
+          exit 1
+
+  release:
+    needs: [decide, checked]
+    if: needs.decide.outputs.tag != ''
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.decide.outputs.tag }}
+      SHA: ${{ needs.decide.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.decide.outputs.sha }}
+          # Not left in .git/config for the build: this job holds the signing
+          # key, and the release is uploaded with gh and its own token below.
+          persist-credentials: false
+
+      # 21, and exactly 21, because the daemon's bytecode depends on the javac
+      # major that compiled it - see shellserver/build.sh, which refuses any
+      # other. F-Droid's build server is Debian trixie with default-jdk, which
+      # is 21; a release built with a different major cannot be reproduced
+      # there, and F-Droid would have to sign it with its own key instead.
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+
+      # AGP 9 numbers the newest platform with a minor version, so compileSdk 37
+      # is "platforms;android-37.0" and NOT "platforms;android-37" - which is
+      # what the first run here failed on: "Failed to find package". Older
+      # platforms keep their plain names, so the daemon's android-36 is asked
+      # for both ways and whichever exists wins. The check afterwards is the
+      # part that matters: build.sh reads android.jar and d8 by path, and a
+      # missing one fails deep inside a Gradle task rather than here.
+      - name: Install the SDK the app and the daemon need
+        run: |
+          sdkmanager --install "platforms;android-37.0" || sdkmanager --install "platforms;android-37"
+          sdkmanager --install "platforms;android-36" || sdkmanager --install "platforms;android-36.0"
+          sdkmanager --install "build-tools;36.0.0"
+          test -f "$ANDROID_HOME/platforms/android-36/android.jar" \
+            || { echo "::error::android-36/android.jar is missing; shellserver/build.sh cannot compile the daemon"; ls "$ANDROID_HOME/platforms"; exit 1; }
+          test -x "$ANDROID_HOME/build-tools/36.0.0/d8" \
+            || { echo "::error::build-tools 36.0.0 d8 is missing"; ls "$ANDROID_HOME/build-tools"; exit 1; }
+
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
+
+      # The version is READ from gradle.properties and CHECKED against the tag,
+      # not derived from the tag. F-Droid's update checker reads
+      # gradle.properties at each tag, so it must be right in the commit the
+      # tag points at. A hand-made tag that disagrees with it means the bump
+      # was forgotten, or has not merged yet. Either way this is where to stop,
+      # not to paper over it. A merge's own version passes the name check by
+      # construction, but not the rest. The versionCode formula is enforced
+      # because it keeps installs upgradeable, so a hand-typed code that breaks
+      # it must not reach a release. A changelog is required because without
+      # one F-Droid shows the update with nothing to say about it.
+      - name: Check the tag against gradle.properties
+        # Explicitly bash: this reads BASH_REMATCH, which zsh does not set, so
+        # the same lines silently compare against versionCode 0 there.
+        shell: bash
+        run: |
+          VERSION="${TAG#v}"
+          if [[ ! "$VERSION" =~ ^([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
+            echo "::error::Tag '$TAG' is not MAJOR.MINOR[.PATCH]. Tag as 0.2, v0.2, 0.2.1 or v0.2.1."
+            exit 1
+          fi
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[4]:-0}"
+          EXPECTED_CODE=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
+
+          NAME=$(sed -n 's/^amVersionName=//p' gradle.properties)
+          CODE=$(sed -n 's/^amVersionCode=//p' gradle.properties)
+          if [ "$NAME" != "$VERSION" ]; then
+            echo "::error::Tag '$TAG' but gradle.properties at its commit says amVersionName=$NAME. If the version bump has not merged yet, nothing needs doing: merging it moves this tag onto the merge and releases it."
+            exit 1
+          fi
+          if [ "$CODE" != "$EXPECTED_CODE" ]; then
+            echo "::error::gradle.properties says amVersionCode=$CODE but $VERSION is MAJOR*10000 + MINOR*100 + PATCH = $EXPECTED_CODE."
+            exit 1
+          fi
+          CHANGELOG="fastlane/metadata/android/en-US/changelogs/$CODE.txt"
+          if [ ! -s "$CHANGELOG" ]; then
+            echo "::error::$CHANGELOG is missing or empty. F-Droid shows it as this release's notes."
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "$TAG -> versionName $VERSION, versionCode $CODE, as gradle.properties says"
+
+      # Written to RUNNER_TEMP, not the workspace, so it cannot be picked up by
+      # anything that archives the checkout.
+      - name: Decode the signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.AMCA_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::AMCA_KEYSTORE_BASE64 is not set. Releases must be signed with a stable key or they cannot be installed over the previous version. See the header of this workflow."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/amcallassistant.jks"
+          echo "AMCA_KEYSTORE=$RUNNER_TEMP/amcallassistant.jks" >> "$GITHUB_ENV"
+
+      - name: Build the release APK
+        env:
+          AMCA_KEYSTORE_PASSWORD: ${{ secrets.AMCA_KEYSTORE_PASSWORD }}
+          AMCA_KEY_ALIAS: ${{ secrets.AMCA_KEY_ALIAS }}
+          AMCA_KEY_PASSWORD: ${{ secrets.AMCA_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease
+
+      # The gate. app/build.gradle.kts deliberately leaves the APK UNSIGNED
+      # rather than falling back to a debug key. With the output name fixed for
+      # the updater, signed and unsigned builds share it, so apksigner - not the
+      # file name - is what stops a missing or wrong secret publishing something
+      # nobody can upgrade to. The digest is printed so a change of signing
+      # identity is visible in the log rather than discovered on a phone.
+      - name: Refuse to publish an APK that is not signed
+        run: |
+          APK=app/build/outputs/apk/release/AM-Call-Assistant.apk
+          if [ ! -f "$APK" ]; then
+            echo "::error::$APK is missing. The release build did not produce its APK."
+            ls -la app/build/outputs/apk/release/ || true
+            exit 1
+          fi
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          CERTS=$("$APKSIGNER" verify --print-certs "$APK")
+          echo "$CERTS"
+          # And signed by the key every release is: the digest README, the
+          # site and SETUP.md give users to check against. Signed by another,
+          # it would install over nothing already installed, and F-Droid,
+          # which checks the developer's signature, would refuse it.
+          EXPECTED=50aeab3630f0198ea3845db51413b1ad29582f78240fa2df6fe55ba8537afdf8
+          if ! grep -qi "certificate SHA-256 digest: $EXPECTED" <<<"$CERTS"; then
+            echo "::error::$APK is not signed with AM Call Assistant's key (SHA-256 $EXPECTED). Is the keystore secret the right one?"
+            exit 1
+          fi
+          echo "APK=$APK" >> "$GITHUB_ENV"
+
+      # One asset name for every release: the in-app updater downloads exactly
+      # AM-Call-Assistant.apk from the latest release, so the tag never enters
+      # the file name.
+      - name: Name the release asset
+        run: |
+          mkdir -p dist
+          cp "$APK" "dist/AM-Call-Assistant.apk"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The release may already exist, which is the normal case when it was
+          # made with the web UI's "Create a new release" button. So this
+          # creates one only when it is missing. For a merge, this is also where
+          # the tag is made, on the commit just built. --target is ignored when
+          # the tag already exists.
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+            --target "$SHA" \
+            --title "$TAG" \
+            --generate-notes \
+            --notes "Requires Android 12 (API 31) or newer. Signed with the project release key, so it installs over any earlier release of the same lineage."
+          gh release upload "$TAG" dist/*.apk --clobber

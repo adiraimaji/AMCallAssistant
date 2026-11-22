@@ -1,0 +1,254 @@
+package com.adiraimaji.amcallassistant.calls
+
+import android.net.Uri
+import android.provider.CallLog
+import com.adiraimaji.amcallassistant.calls.CallHistory.Kind
+import com.adiraimaji.amcallassistant.calls.CallHistory.Logged
+import com.adiraimaji.amcallassistant.calls.CallHistory.Status
+import com.adiraimaji.amcallassistant.calls.CoverageHistory.State
+import com.adiraimaji.amcallassistant.recordings.Recording
+import com.adiraimaji.amcallassistant.recordings.RecordingStore
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+import org.mockito.Mockito
+import java.util.Date
+
+/** What the Calls tab says about each call, and what it must not claim. */
+class CallHistoryTest {
+
+    private val uri: Uri = Mockito.mock(Uri::class.java)
+    private val t = 1_795_000_000_000L
+    private val minute = 60_000L
+
+    private fun rec(at: Long, incoming: Boolean = true, seconds: Long = 120) = Recording(
+        name = RecordingStore.nameFor(Date(at), incoming), uri = uri, whenLabel = "", incoming = incoming,
+        durationLabel = "", sizeLabel = "", durationMillis = seconds * 1000,
+    )
+
+    private fun call(at: Long, kind: Kind = Kind.INCOMING, seconds: Int = 120) =
+        Logged(at, seconds, kind, "Someone", "+100")
+
+    private fun classify(
+        calls: List<Logged>,
+        recordings: List<Recording> = emptyList(),
+        trashed: List<Recording> = emptyList(),
+        ledger: List<CallLedger.Recorded> = emptyList(),
+        history: List<Pair<Long, State>> = listOf(0L to State.AUTOMATIC),
+        skipped: List<CallLedger.Recorded> = emptyList(),
+        now: Long = t + minute,
+    ) = CallHistory.classify(calls, recordings, trashed, CallLedger.Ledger(ledger, emptySet(), skipped), history, now)
+
+    @Test fun aRecordedCallPlays() {
+        // Rang 20 s before it was answered and the recording began.
+        val recording = rec(t + 20_000)
+        val result = classify(listOf(call(t)), recordings = listOf(recording)).single()
+        assertEquals(Status.RECORDED, result.status)
+        assertEquals(recording, result.recording)
+    }
+
+    @Test fun aMissedCallJustBeforeNeverStealsTheAnsweredOnesRecording() {
+        val missed = call(t, Kind.MISSED, seconds = 0)
+        val answered = call(t + minute)
+        val recording = rec(t + minute + 10_000)
+        val result = classify(listOf(missed, answered), recordings = listOf(recording))
+        assertEquals(Status.RECORDED, result.single { it.kind == Kind.INCOMING }.status)
+        val m = result.single { it.kind == Kind.MISSED }
+        assertEquals(Status.NOT_CONNECTED, m.status)
+        assertNull(m.recording)
+    }
+
+    @Test fun twoAnsweredCallsAMinuteApartEachKeepTheirOwn() {
+        val first = call(t)
+        val second = call(t + minute)
+        val r1 = rec(t + 5_000)
+        val r2 = rec(t + minute + 5_000)
+        val result = classify(listOf(first, second), recordings = listOf(r1, r2))
+        assertEquals(r1, result.single { it.at == t }.recording)
+        assertEquals(r2, result.single { it.at == t + minute }.recording)
+    }
+
+    @Test fun aCallTakenOverAndRecordedShowsItsMessage() {
+        // Ask first: the message up to the takeover, and the rest of the call
+        // recorded at the prompt - two recordings of one call, the list newest
+        // first. The one shown is the message, which the user did not hear.
+        val message = rec(t + 20_000).copy(message = true)
+        val rest = rec(t + 50_000)
+        assertEquals(message, classify(listOf(call(t)), recordings = listOf(rest, message)).single().recording)
+    }
+
+    @Test fun anOutgoingCallNobodyAnsweredIsNotARecordingQuestion() {
+        assertEquals(Status.NOT_CONNECTED, classify(listOf(call(t, Kind.OUTGOING, seconds = 0))).single().status)
+    }
+
+    @Test fun aCallInTheTrashSaysSo() {
+        assertEquals(Status.IN_TRASH, classify(listOf(call(t)), trashed = listOf(rec(t + 5_000))).single().status)
+    }
+
+    @Test fun aRecordingDeletedForGoodIsStillKnownForAWeek() {
+        val ledger = listOf(CallLedger.Recorded(t + 5_000, true, 115))
+        assertEquals(Status.DELETED, classify(listOf(call(t)), ledger = ledger).single().status)
+    }
+
+    @Test fun aCallTheRulesLeftOutSaysSo() {
+        val skipped = listOf(CallLedger.Recorded(t + 5_000, true, 115))
+        assertEquals(Status.SKIPPED, classify(listOf(call(t)), skipped = skipped).single().status)
+    }
+
+    @Test fun pastTheLedgersWeekAMissingRecordingIsNotCalledMissed() {
+        // Deleted or left out more than a week ago looks exactly like missed:
+        // the ledger that told them apart has let it go.
+        val now = t + CallLedger.KEEP_MS + minute
+        assertEquals(Status.NO_RECORDING, classify(listOf(call(t)), now = now).single().status)
+        assertEquals(Status.NOT_RECORDED, classify(listOf(call(now - minute)), now = now).single().status)
+    }
+
+    @Test fun aCallTooShortToCountSaysThat() {
+        assertEquals(
+            Status.TOO_SHORT,
+            classify(listOf(call(t, seconds = MissedCalls.MIN_SECONDS - 1))).single().status,
+        )
+    }
+
+    @Test fun theSwitchAtTheTimeExplainsTheRest() {
+        val history = listOf(t - 3 * minute to State.AUTOMATIC, t - 2 * minute to State.OFF, t - minute to State.ASK_FIRST)
+        fun at(time: Long) = classify(listOf(call(time)), history = history).single().status
+        assertEquals(Status.NOT_RECORDED, at(t - 150_000))
+        assertEquals(Status.RECORDING_OFF, at(t - 90_000))
+        assertEquals(Status.ASK_FIRST, at(t))
+    }
+
+    @Test fun beforeTheHistoryBeganNothingIsGuessed() {
+        val history = listOf(t to State.AUTOMATIC)
+        assertEquals(Status.NO_RECORDING, classify(listOf(call(t - minute)), history = history).single().status)
+    }
+
+    /** A redial 20 s after the call before's logged end: its recording is
+     *  its own, not the call before's - whose own was deleted - which it
+     *  played, RECORDED (review round 12). */
+    @Test fun aRedialsRecordingIsNotTheCallBefores() {
+        val before = call(t, Kind.OUTGOING)
+        val redial = call(t + 140_000, Kind.OUTGOING)
+        val recording = rec(t + 140_000 + 2_000, incoming = false)
+        val result = classify(listOf(before, redial), recordings = listOf(recording), now = t + 10 * minute)
+        assertEquals(recording, result.single { it.at == redial.at }.recording)
+        assertNull(result.single { it.at == t }.recording)
+        assertEquals(Status.NOT_RECORDED, result.single { it.at == t }.status)
+    }
+
+    /** A part joined mid-call, 5 minutes into its call, plays for it - by
+     *  the call's start the ledger has - and a redial's recording does not
+     *  take its place (review round 12). */
+    @Test fun aJoinedPartPlaysForItsCall() {
+        val joinedAt = t + 5 * minute
+        val joined = rec(joinedAt, incoming = false).copy(callAt = t)
+        val redial = rec(t + 8 * minute, incoming = false)
+        val result = classify(
+            listOf(call(t, Kind.OUTGOING, seconds = 400), call(t + 8 * minute - 2_000, Kind.OUTGOING)),
+            recordings = listOf(redial, joined),
+            ledger = listOf(CallLedger.Recorded(joinedAt, false, 100, callAt = t)),
+            now = t + 20 * minute,
+        )
+        assertEquals(joined, result.single { it.at == t }.recording)
+        assertEquals(redial, result.single { it.at != t }.recording)
+    }
+
+    /** Call waiting at the revive: the held call's part, from its first
+     *  packet minutes in, is nearer the waiting call by its own start - it
+     *  played on the waiting call's row, that call's own part on none. By
+     *  its call's start only (review round 13). */
+    @Test fun aJoinedPartIsNeverTakenByItsOwnStart() {
+        val held = call(t, seconds = 600)
+        val waiting = call(t + 170_000, seconds = 90)
+        val heldPart = rec(t + 300_000, seconds = 60).copy(callAt = t)
+        val waitingPart = rec(t + 180_000, seconds = 50).copy(callAt = t + 170_000)
+        val result = classify(
+            listOf(held, waiting),
+            recordings = listOf(heldPart, waitingPart),
+            ledger = listOf(
+                CallLedger.Recorded(t + 300_000, true, 60, callAt = t),
+                CallLedger.Recorded(t + 180_000, true, 50, callAt = t + 170_000),
+            ),
+            now = t + 20 * minute,
+        )
+        assertEquals(heldPart, result.single { it.at == t }.recording)
+        assertEquals(waitingPart, result.single { it.at == waiting.at }.recording)
+    }
+
+    /** Call waiting at a revive, tracking off: the part matched to the
+     *  waiting call holds the held one's audio too - it plays for that call,
+     *  and in the trash says so; it read DELETED, nothing to play (review
+     *  round 14). A call over before the revive is not held. */
+    @Test fun aHeldCallPlaysTheJoinedPartItIsIn() {
+        val held = call(t, seconds = 400)
+        val waiting = call(t + 100_000, Kind.OUTGOING, seconds = 60)
+        val before = call(t - 200_000, seconds = 150)
+        val part = rec(t + 120_000, incoming = false, seconds = 100).copy(callAt = t + 100_000)
+        val ledger = listOf(CallLedger.Recorded(t + 120_000, false, 100, callAt = t + 100_000))
+        val result = classify(listOf(held, waiting, before), recordings = listOf(part), ledger = ledger, now = t + 20 * minute)
+        assertEquals(part, result.single { it.at == t }.recording)
+        assertEquals(part, result.single { it.at == waiting.at }.recording)
+        assertNull(result.single { it.at == before.at }.recording)
+        val binned = classify(listOf(held), trashed = listOf(part), ledger = ledger, now = t + 20 * minute).single()
+        assertEquals(Status.IN_TRASH, binned.status)
+    }
+
+    /** Saved in another time zone, its name's time hours off: matched by
+     *  the start the saver noted (review round 13). */
+    @Test fun aRecordingIsMatchedByItsNotedStartNotItsName() {
+        val recording = rec(t + 2 * 60 * minute).copy(startUtc = t + 20_000)
+        val result = classify(listOf(call(t)), recordings = listOf(recording)).single()
+        assertEquals(recording, result.recording)
+    }
+
+    @Test fun aCallThatCameInDuringARecordingIsInIt() {
+        // Call waiting: an incoming call 30 s into an outgoing recording.
+        val outgoing = rec(t, incoming = false, seconds = 300)
+        val waiting = call(t + 30_000, Kind.INCOMING)
+        val result = classify(listOf(waiting), recordings = listOf(outgoing)).single()
+        assertEquals(Status.RECORDED, result.status)
+        assertEquals(outgoing, result.recording)
+    }
+
+    @Test fun aMessengerRecordingIsNoPhoneCallsRecording() {
+        // A Viber call five seconds after the log's outgoing call: somebody
+        // else entirely, however close in time.
+        val viber = Recording(
+            name = "20261020_165705_out_viber.ogg".let { n ->
+                java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                    .format(java.util.Date(t + 5_000)) + n.drop(15)
+            },
+            uri = uri, whenLabel = "", incoming = false, durationLabel = "", sizeLabel = "",
+            durationMillis = 120_000,
+        )
+        val result = classify(listOf(call(t, Kind.OUTGOING)), recordings = listOf(viber)).single()
+        assertNull(result.recording)
+    }
+
+    @Test fun theCallLogsTypesMapToKinds() {
+        assertEquals(Kind.INCOMING, CallHistory.kindOf(CallLog.Calls.INCOMING_TYPE))
+        assertEquals(Kind.OUTGOING, CallHistory.kindOf(CallLog.Calls.OUTGOING_TYPE))
+        assertEquals(Kind.MISSED, CallHistory.kindOf(CallLog.Calls.MISSED_TYPE))
+        assertEquals(Kind.DECLINED, CallHistory.kindOf(CallLog.Calls.REJECTED_TYPE))
+        assertEquals(Kind.BLOCKED, CallHistory.kindOf(CallLog.Calls.BLOCKED_TYPE))
+        assertEquals(Kind.OTHER, CallHistory.kindOf(CallLog.Calls.ANSWERED_EXTERNALLY_TYPE))
+    }
+}
+
+/** The record of how calls were being recorded, read back. */
+class CoverageHistoryTest {
+
+    @Test fun theStateInForceIsTheLatestAtOrBefore() {
+        val history = listOf(10L to State.AUTOMATIC, 20L to State.OFF, 30L to State.ASK_FIRST)
+        assertNull(CoverageHistory.stateAt(history, 9))
+        assertEquals(State.AUTOMATIC, CoverageHistory.stateAt(history, 10))
+        assertEquals(State.AUTOMATIC, CoverageHistory.stateAt(history, 19))
+        assertEquals(State.OFF, CoverageHistory.stateAt(history, 25))
+        assertEquals(State.ASK_FIRST, CoverageHistory.stateAt(history, 99))
+    }
+
+    @Test fun storedEntriesParseInOrderAndRubbishIsDropped() {
+        val parsed = CoverageHistory.parse(setOf("30:OFF", "10:AUTOMATIC", "x:OFF", "20:NOPE", "20:ASK_FIRST"))
+        assertEquals(listOf(10L to State.AUTOMATIC, 20L to State.ASK_FIRST, 30L to State.OFF), parsed)
+    }
+}

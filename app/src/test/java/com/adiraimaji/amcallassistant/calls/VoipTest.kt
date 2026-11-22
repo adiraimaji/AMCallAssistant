@@ -1,0 +1,160 @@
+package com.adiraimaji.amcallassistant.calls
+
+import com.adiraimaji.amcallassistant.calls.VoipCallNotes.Note
+import com.adiraimaji.amcallassistant.recordings.FileNames
+import com.adiraimaji.amcallassistant.recordings.RecordingSaver
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+/** Messenger calls: which app a daemon file is, and who and which way from
+ *  the app's own call notifications. */
+class VoipTest {
+
+    private val viber = "com.viber.voip"
+    private val start = 1_795_000_000_000L
+    private val second = 1_000L
+
+    @Test fun aDaemonFileSaysWhichMessengerItIs() {
+        assertEquals("Viber", VoipApps.forRecfile("amcallassistant_rec_1795000000000_voip-com.viber.voip.dat")?.label)
+        assertEquals("viber", VoipApps.forRecfile("amcallassistant_rec_1_voip-com.viber.voip.dat")?.tag)
+        assertNull(VoipApps.forRecfile("amcallassistant_rec_1795000000000_in.dat"))
+        // Not on the list, and still saved as a messenger call.
+        assertEquals("Messenger", VoipApps.forRecfile("amcallassistant_rec_1_voip-org.example.chat.dat")?.label)
+        // Google Meet: its package is its old name, from Duo.
+        val meet = VoipApps.forRecfile("amcallassistant_rec_1_voip-com.google.android.apps.tachyon.dat")
+        assertEquals("Google Meet", meet?.label)
+        assertEquals("meet", meet?.tag)
+        assertEquals("meet", FileNames.parse("20261026_132924_out_meet_Priya Raman.ogg")?.app)
+        // Which way, where the recorder knew (Meet's calls, through Telecom).
+        assertEquals(true, VoipApps.directionOf("amcallassistant_rec_1_in_voip-com.google.android.apps.tachyon.dat"))
+        assertEquals(false, VoipApps.directionOf("amcallassistant_rec_1_out_voip-com.google.android.apps.tachyon.dat"))
+        assertEquals("Google Meet", VoipApps.forRecfile("amcallassistant_rec_1_in_voip-com.google.android.apps.tachyon.dat")?.label)
+        assertEquals(1L, RecordingSaver.startMillis("amcallassistant_rec_1_in_voip-com.google.android.apps.tachyon.dat"))
+        assertNull(VoipApps.directionOf("amcallassistant_rec_1_voip-com.whatsapp.dat"))
+    }
+
+    @Test fun anIncomingMeetCallIsIncomingThoughItsNotesNameTwoPeople() {
+        // As the Honor stored them, 2026-10-26: the ring 7 s before the
+        // recording named the caller, the in-call notification their account.
+        val meet = "com.google.android.apps.tachyon"
+        val notes = listOf(
+            Note(meet, start - 7 * second, "Priya Raman", true),
+            Note(meet, start - 1 * second, "priyar", null),
+        )
+        assertEquals("the notes alone read it as outgoing", false, VoipCallNotes.pick(notes, meet, start)?.incoming)
+        val call = VoipCallNotes.pick(notes, meet, start, incoming = true)!!
+        assertEquals(true, call.incoming)
+        assertEquals("the name the phone showed as it rang", "Priya Raman", call.name)
+        // Placed by the user: the ring before it was another call's.
+        assertEquals("priyar", VoipCallNotes.pick(notes, meet, start, incoming = false)?.name)
+        // No notes - Show who called off - and still the way the recorder knew.
+        assertEquals(true, VoipCallNotes.pick(emptyList(), meet, start, incoming = true)?.incoming)
+        assertNull(VoipCallNotes.pick(emptyList(), meet, start))
+    }
+
+    @Test fun aCallThatRangFirstWasIncoming() {
+        val notes = listOf(
+            Note(viber, start - 12 * second, "Priya Raman", true),
+            Note(viber, start + 3 * second, "Priya Raman", null),
+        )
+        val call = VoipCallNotes.pick(notes, viber, start)!!
+        assertEquals(true, call.incoming)
+        assertEquals("Priya Raman", call.name)
+    }
+
+    @Test fun anEarlierCallsRingDoesNotMakeThisOneIncoming() {
+        // Answered a call two minutes ago, then placed this one.
+        val notes = listOf(
+            Note(viber, start - 120 * second, "Someone Else", true),
+            Note(viber, start - 2 * second, "Priya Raman", null),
+        )
+        assertEquals(false, VoipCallNotes.pick(notes, viber, start)?.incoming)
+    }
+
+    @Test fun aMissedRingThenACallPlacedToSomeoneElseIsOutgoing() {
+        // Alice rang a minute ago, unanswered; the user then called Bob.
+        val notes = listOf(
+            Note(viber, start - 60 * second, "Alice", true),
+            Note(viber, start + 2 * second, "Bob", null),
+        )
+        val call = VoipCallNotes.pick(notes, viber, start)!!
+        assertEquals(false, call.incoming)
+        assertEquals("Bob", call.name)
+    }
+
+    @Test fun aCallThatNeverRangWasPlacedByTheUser() {
+        val notes = listOf(Note(viber, start - 2 * second, "Priya Raman", null))
+        assertEquals(false, VoipCallNotes.pick(notes, viber, start)?.incoming)
+    }
+
+    @Test fun anotherAppsOrAnOldCallsNotesDoNotCount() {
+        val notes = listOf(
+            Note("com.whatsapp", start, "Someone", true),
+            Note(viber, start - 10 * 60 * second, "Earlier", true),
+        )
+        assertNull(VoipCallNotes.pick(notes, viber, start))
+    }
+
+    @Test fun theNameNearestTheCallWins() {
+        val notes = listOf(
+            Note(viber, start - 90 * second, "Old Name", null),
+            Note(viber, start + 1 * second, "Priya Raman", null),
+            Note(viber, start + 30 * second, null, null),
+        )
+        assertEquals("Priya Raman", VoipCallNotes.pick(notes, viber, start)?.name)
+    }
+
+    @Test fun aRepostIsARepeatButTheNextCallIsNot() {
+        val first = Note(viber, start, "Priya Raman", null)
+        assertEquals(true, VoipCallNotes.isRepeat(listOf(first), first.copy(at = start + 10 * second)))
+        // The same person called again four minutes later: a call of its own.
+        assertEquals(false, VoipCallNotes.isRepeat(listOf(first), first.copy(at = start + 4 * 60 * second)))
+        // A ring is news even straight after the last note.
+        assertEquals(false, VoipCallNotes.isRepeat(listOf(first), first.copy(at = start + 5 * second, incoming = true)))
+    }
+
+    @Test fun anAppsOwnNameIsNoCaller() {
+        assertNull(VoipCallNotes.clean("Viber", "Viber"))
+        // Telegram's title during an outgoing call; the caller is in the text.
+        assertNull(VoipCallNotes.clean("Ongoing Telegram call", "Telegram"))
+        assertNull(VoipCallNotes.clean("  ", "Viber"))
+        assertEquals("Priya Raman", VoipCallNotes.clean(" Priya Raman ", "Viber"))
+    }
+
+    /** Issue #93: Telegram from telegram.org, and its beta, are known; only
+     *  Settings tells them apart from the Play Store's. */
+    @Test fun telegramsOtherBuildsAreTelegramButInSettings() {
+        val play = VoipApps.byPackage("org.telegram.messenger")!!
+        val web = VoipApps.byPackage("org.telegram.messenger.web")!!
+        val beta = VoipApps.byPackage("org.telegram.messenger.beta")!!
+        assertEquals(listOf("Telegram", "Telegram (telegram.org)", "Telegram Beta"), listOf(play, web, beta).map { it.settingsName })
+        for (app in listOf(play, web, beta)) {
+            assertEquals("Telegram", app.label)
+            assertEquals("telegram", app.tag)
+            // The prompt, and a notification naming the app, as for Play's.
+            assertEquals("Telegram call in progress.", RecordPrompt.callText(true, app.pkg))
+            assertNull(VoipCallNotes.clean("Ongoing Telegram call", app.label))
+            assertEquals("telegram", VoipApps.forRecfile("amcallassistant_rec_1_voip-${app.pkg}.dat")?.tag)
+        }
+        // Diagnostics' self-test names them as Settings does.
+        assertEquals(
+            "Telegram, Telegram (telegram.org)",
+            com.adiraimaji.amcallassistant.recorder.messengerNames(linkedSetOf("org.telegram.messenger", "org.telegram.messenger.web")),
+        )
+        // Every other app is named the same in Settings as anywhere.
+        assertEquals(
+            VoipApps.KNOWN.filter { "telegram.messenger." !in it.pkg }.map { it.label },
+            VoipApps.KNOWN.filter { "telegram.messenger." !in it.pkg }.map { it.settingsName },
+        )
+    }
+
+    @Test fun notesRoundTrip() {
+        listOf(
+            Note(viber, start, "Priya Raman", true),
+            Note(viber, start, null, null),
+            Note(viber, start, "a\u0001b", false),
+        ).forEach { assertEquals(it, VoipCallNotes.decode(VoipCallNotes.encode(it))) }
+        assertNull(VoipCallNotes.decode("rubbish"))
+    }
+}

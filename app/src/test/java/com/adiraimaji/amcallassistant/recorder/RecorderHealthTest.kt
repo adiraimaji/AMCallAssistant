@@ -1,0 +1,158 @@
+package com.adiraimaji.amcallassistant.recorder
+
+import com.adiraimaji.amcallassistant.adb.AdbTransport
+import com.adiraimaji.amcallassistant.calls.AfterCall
+import com.adiraimaji.amcallassistant.calls.CallLedger
+import com.adiraimaji.amcallassistant.calls.CallLedger.Recorded
+import com.adiraimaji.amcallassistant.recorder.RecorderHealth.Problem
+import com.adiraimaji.amcallassistant.system.AdbdState
+import com.adiraimaji.amcallassistant.system.GlobalSettings
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/** When the recorder-down alert speaks, and what it says the cause is. */
+class RecorderHealthTest {
+
+    private val since = 1_791_544_738_000L
+
+    @Test fun offWifiTheAnswerIsWifi() {
+        assertEquals(Problem.NEEDS_WIFI, RecorderHealth.diagnose(onWifi = false, refusedInARow = 5))
+    }
+
+    @Test fun anAdbdThatKeepsTurningUsAwaySuggestsTheLostPairing() {
+        assertEquals(Problem.CANNOT_START, RecorderHealth.diagnose(onWifi = true, refusedInARow = 1))
+        assertEquals(
+            Problem.CANNOT_CONNECT,
+            RecorderHealth.diagnose(onWifi = true, refusedInARow = RecorderHealth.REFUSALS_FOR_PAIRING),
+        )
+    }
+
+    @Test fun onWifiWithDebuggingOnAndNothingAdvertisedTheWifiIsNotAllowed() {
+        // Android 17 emulator: is_trusted_network=false, tls_port=0.
+        assertEquals(
+            Problem.NETWORK_NOT_ALLOWED,
+            RecorderHealth.diagnose(onWifi = true, refusedInARow = 0, unadvertised = true),
+        )
+    }
+
+    @Test fun theWifiIsNotAllowedOnlyWithAdbdRunning() {
+        val notAllowed = { refused: Boolean, on: Boolean, adbd: AdbdState.State, here: Boolean ->
+            RecorderHealth.notAllowed(refusedHere = refused, switchOn = on, adbd = adbd, switchedOnHere = here)
+        }
+        // The emulator's untrusted Wi-Fi: adbd running, nothing advertised.
+        assertTrue(notAllowed(false, true, AdbdState.State.RUNNING, false))
+        // The Honor after a restart, 2026-10-28: switch on, adbd not running,
+        // a Wi-Fi allowed long before. Not the Wi-Fi - even after a switch.
+        assertFalse(notAllowed(false, true, AdbdState.State.STOPPED, false))
+        assertFalse(notAllowed(false, true, AdbdState.State.STOPPED, true))
+        // Unreadable: the Wi-Fi once a switch here has not started anything.
+        assertFalse(notAllowed(false, true, AdbdState.State.UNKNOWN, false))
+        assertTrue(notAllowed(false, true, AdbdState.State.UNKNOWN, true))
+        // Refused here (Android 12 keeps the switch off) says it whatever else.
+        assertTrue(notAllowed(true, false, AdbdState.State.STOPPED, false))
+        // Switched off, with no refusal: nothing to allow.
+        assertFalse(notAllowed(false, false, AdbdState.State.RUNNING, true))
+    }
+
+    @Test fun offWifiNothingIsAdvertisedAnywaySoThatSaysNothing() {
+        assertEquals(Problem.NEEDS_WIFI, RecorderHealth.diagnose(onWifi = false, refusedInARow = 0, unadvertised = true))
+    }
+
+    @Test fun anAdbdThatAdvertisesAndRefusesIsAboutThePairingNotTheWifi() {
+        // A refusal needs an advertisement first, so the two do not meet in
+        // one revive; across revives, the refusals win.
+        assertEquals(
+            Problem.CANNOT_CONNECT,
+            RecorderHealth.diagnose(onWifi = true, refusedInARow = RecorderHealth.REFUSALS_FOR_PAIRING, unadvertised = true),
+        )
+    }
+
+    @Test fun aRefusalWithWirelessDebuggingOffIsAPortRememberedNotAnAdbdSayingNo() {
+        val refused = AdbTransport.ConnectOutcome.REFUSED
+        assertEquals(AdbTransport.ConnectOutcome.NOT_FOUND, RecorderHealth.meant(refused, GlobalSettings.Reading.OFF))
+        // On, or unread: adbd may be turning AM Call Assistant away - the pairing.
+        assertEquals(refused, RecorderHealth.meant(refused, GlobalSettings.Reading.ON))
+        assertEquals(refused, RecorderHealth.meant(refused, GlobalSettings.Reading.UNKNOWN))
+        // Nothing else is read differently.
+        for (wireless in GlobalSettings.Reading.entries) {
+            for (found in AdbTransport.ConnectOutcome.entries - refused) {
+                assertEquals(found, RecorderHealth.meant(found, wireless))
+            }
+        }
+    }
+
+    @Test fun aRecorderBackWithinTheGraceIsNeverAnnounced() {
+        // A reboot on Wi-Fi: down for seconds, then up.
+        assertEquals(null, RecorderHealth.alert(since + RecorderHealth.GRACE_MS - 1, since, null, Problem.CANNOT_START, callUp = false))
+        assertEquals(
+            RecorderHealth.Alert(silent = false),
+            RecorderHealth.alert(since + RecorderHealth.GRACE_MS, since, null, Problem.CANNOT_START, callUp = false),
+        )
+    }
+
+    /** Silent in a call - a tone in the earpiece else - and told all the
+     *  same, not held to an end no service may see (review rounds 10, 11);
+     *  posted again with its sound once the call is over - marked said, it
+     *  was never heard (review round 12). */
+    @Test fun aCallUpMakesTheAlertSilentAndTheEndHearsIt() {
+        val later = since + RecorderHealth.GRACE_MS * 2
+        assertEquals(RecorderHealth.Alert(silent = true), RecorderHealth.alert(later, since, null, Problem.NEEDS_WIFI, callUp = true))
+        val saidSilent = Problem.NEEDS_WIFI.name + "|silent"
+        assertEquals("not again in the call", null, RecorderHealth.alert(later, since, saidSilent, Problem.NEEDS_WIFI, callUp = true))
+        assertEquals(
+            RecorderHealth.Alert(silent = false, again = true),
+            RecorderHealth.alert(later, since, saidSilent, Problem.NEEDS_WIFI, callUp = false),
+        )
+        assertEquals(
+            "a new cause after the call: heard too",
+            RecorderHealth.Alert(silent = false, again = true),
+            RecorderHealth.alert(later, since, saidSilent, Problem.CANNOT_START, callUp = false),
+        )
+    }
+
+    @Test fun oneAlertPerCauseNotOneEveryRetry() {
+        val later = since + RecorderHealth.GRACE_MS * 10
+        assertEquals(null, RecorderHealth.alert(later, since, Problem.NEEDS_WIFI.name, Problem.NEEDS_WIFI, callUp = false))
+        assertEquals(
+            RecorderHealth.Alert(silent = false),
+            RecorderHealth.alert(later, since, Problem.NEEDS_WIFI.name, Problem.CANNOT_CONNECT, callUp = false),
+        )
+    }
+}
+
+/** The ledger's entries survive a round trip, and rubbish does not stop it. */
+class CallLedgerTest {
+
+    @Test fun recordingsAndReportsRoundTrip() {
+        val entries = setOf(
+            CallLedger.encodeRecording(Recorded(1_791_544_738_000L, true, 95)),
+            CallLedger.encodeRecording(Recorded(1_791_544_999_000L, false, 0)),
+            "c:1791545000000",
+        )
+        val ledger = CallLedger.parse(entries)
+        assertEquals(
+            setOf(Recorded(1_791_544_738_000L, true, 95), Recorded(1_791_544_999_000L, false, 0)),
+            ledger.recordings.toSet(),
+        )
+        assertEquals(setOf(1_791_545_000_000L), ledger.reported)
+    }
+
+    @Test fun skippedCallsAreKeptApartFromRecordings() {
+        val ledger = CallLedger.parse(setOf("s:1791544738000:in:95", CallLedger.encodeRecording(Recorded(5, false, 1))))
+        assertEquals(listOf(Recorded(1_791_544_738_000L, true, 95)), ledger.skipped)
+        assertEquals(listOf(Recorded(5, false, 1)), ledger.recordings)
+    }
+
+    @Test fun unreadableEntriesAreDropped() {
+        val ledger = CallLedger.parse(setOf("r:nope:in:5", "x:1", "c:", "r:1:in"))
+        assertTrue(ledger.recordings.isEmpty())
+        assertTrue(ledger.reported.isEmpty())
+    }
+
+    @Test fun lengthsReadTheWayTheListShowsThem() {
+        assertEquals("45 s", AfterCall.length(45.9))
+        assertEquals("3:21", AfterCall.length(201.0))
+    }
+}

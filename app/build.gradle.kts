@@ -365,7 +365,7 @@ dependencies {
     // Roborazzi turns what it draws into a PNG to compare. Test-only, so the
     // release APK - and F-Droid's reproducible build of it - is untouched;
     // no Gradle plugin either, so a release build resolves nothing new.
-    testImplementation("org.robolectric:robolectric:4.18")
+    testImplementation("org.robolectric:robolectric:4.18.1")
     testImplementation("io.github.takahirom.roborazzi:roborazzi:1.79.0")
     testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.79.0")
     testImplementation(platform("androidx.compose:compose-bom:2026.08.00"))

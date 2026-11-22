@@ -77,7 +77,7 @@ dependencies {
 val errorprone: Configuration = configurations.create("errorprone")
 
 dependencies {
-    errorprone("com.google.errorprone:error_prone_core:2.52.0")
+    errorprone("com.google.errorprone:error_prone_core:2.53.0")
     errorprone("com.uber.nullaway:nullaway:0.14.4")
 }
 

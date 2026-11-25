@@ -119,6 +119,8 @@ object CaptureDaemon {
     suspend fun debuggingOff(context: Context, go: Boolean): DaemonClient.OffReply? = DaemonClient.debuggingOff(context, go)
     suspend fun goAhead(context: Context, delayMs: Int, rangAt: Long): String? = DaemonClient.goAhead(context, delayMs, rangAt)
     suspend fun answerNow(context: Context, longestSeconds: Int): String? = DaemonClient.answerNow(context, longestSeconds)
+    suspend fun callNow(context: Context, number: String, seconds: Int, delayMs: Int): String? =
+        DaemonClient.callNow(context, number, seconds, delayMs)
     suspend fun handOver(context: Context, talk: Boolean): Boolean = DaemonClient.handOver(context, talk)
     suspend fun greetingBytes(context: Context): Long? = DaemonClient.greetingBytes(context)
     suspend fun startTake(context: Context): Boolean = DaemonClient.startTake(context)

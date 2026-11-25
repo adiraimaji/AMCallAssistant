@@ -346,6 +346,10 @@ final class Commands {
             reply(client, "GO " + state);
             return;
         }
+        if (command == Wire.COMMAND_CALL_NOW) {
+            callNow(client);
+            return;
+        }
         if (command == Wire.COMMAND_HANDOVER) {
             int what = client.getInputStream().read();
             AnswerMachine machine = Answering.answerMachine;
@@ -486,6 +490,37 @@ final class Commands {
      *   'F' the carrier's no-reply forwarding, as the network has it - slow.
      *   'S' a byte of seconds: lengthen it, keeping its number.
      */
+    /**
+     * Calling Machine: arm the answering machine for the call this phone is
+     * about to place, then place it as the shell (the app has no CALL_PHONE).
+     */
+    private static void callNow(Socket client) throws Exception {
+        DataInputStream in = new DataInputStream(client.getInputStream());
+        String number = Wire.readName(client.getInputStream());
+        int seconds = in.readInt();
+        int delayMs = in.readInt();
+        if (!number.matches("[0-9+*#]{3,32}") || number.endsWith("#")) {
+            reply(client, Wire.test("bad-number"));
+            return;
+        }
+        if (AnswerTest.mayBeEmergencyNumber(number)) {
+            reply(client, Wire.test("emergency"));
+            return;
+        }
+        if (!Greeting.present()) {
+            reply(client, Wire.test("no-greeting"));
+            return;
+        }
+        Boolean armed = Answering.onMain(() -> Answering.answerMachine != null &&
+                Answering.answerMachine.armCall(number, seconds, delayMs));
+        boolean placed = Boolean.TRUE.equals(armed);
+        reply(client, Wire.test(placed ? "armed" : "busy"));
+        if (placed) {
+            Shell.runQuietly("am", "start", "-a", "android.intent.action.CALL",
+                    "-d", "tel:" + number.replace("#", "%23"));
+        }
+    }
+
     private static void diagnose(Socket client) throws Exception {
         DataInputStream in = new DataInputStream(client.getInputStream());
         int what = in.read();

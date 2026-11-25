@@ -2,6 +2,7 @@ package com.adiraimaji.amcallassistant.tasker
 
 import android.content.Context
 import android.util.Log
+import com.adiraimaji.amcallassistant.answering.AudioGreeting
 import com.adiraimaji.amcallassistant.answering.Greeting
 import com.adiraimaji.amcallassistant.answering.GreetingSpeaker
 import com.adiraimaji.amcallassistant.answering.TextToSpeechGreeting
@@ -15,6 +16,15 @@ import kotlinx.coroutines.withContext
  */
 object GreetingMaker {
     private const val TAG = "AMCallAssistant"
+
+    /** An audio file as the greeting: its path may hold a Tasker variable that
+     *  has already been replaced before the action fired. */
+    suspend fun fromAudio(context: Context, path: String): ByteArray? {
+        if (path.isBlank()) return null
+        return runCatching {
+            AudioGreeting.pcm(context.applicationContext, AudioGreeting.uri(path))
+        }.onFailure { Log.w(TAG, "tasker: the audio greeting could not be read", it) }.getOrNull()
+    }
 
     suspend fun make(context: Context, text: String, voiceId: String?): ByteArray? {
         if (text.isBlank()) return null

@@ -292,6 +292,14 @@ fun SettingsScreen(
             }
             row {
                 SettingsRow(
+                    title = "Calling Machine",
+                    summary = "Schedule calls with their own greetings and durations",
+                    icon = Icons.Filled.Phone,
+                    onClick = { vm.showScreen(Screen.CALLING_MACHINE) },
+                )
+            }
+            row {
+                SettingsRow(
                     title = "Messenger calls",
                     summary = messengerSummary(state),
                     mark = headerMark(Marked.MESSENGERS, headerFacts, status),

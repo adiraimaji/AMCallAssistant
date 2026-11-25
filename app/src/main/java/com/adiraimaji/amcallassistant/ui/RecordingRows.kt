@@ -306,6 +306,7 @@ internal fun RowMeta(recording: Recording, day: Day, style: TextStyle, tint: Col
         appIcon = appIcon,
         appName = app,
         message = recording.message,
+        calling = recording.calling,
         // With no caller the headline already is the date.
         time = if (recording.caller != null) {
             (recording.shownAt ?: recording.startedAtMillis)?.let { timeUnder(day, it) } ?: recording.whenLabel
@@ -336,6 +337,7 @@ internal fun DetailsLine(
     appIcon: ImageBitmap? = null,
     appName: String? = null,
     message: Boolean = false,
+    calling: Boolean = false,
 ) {
     YieldingRow(gap = 4.dp) {
         if (incoming != null) {
@@ -351,6 +353,9 @@ internal fun DetailsLine(
         if (appIcon != null) Image(appIcon, contentDescription = appName, modifier = Modifier.size(16.dp))
         if (message) {
             Icon(messageIcon, contentDescription = "Message", tint = tint, modifier = Modifier.size(16.dp))
+        }
+        if (calling) {
+            Icon(Icons.Filled.PlayArrow, contentDescription = "Calling Machine call", tint = tint, modifier = Modifier.size(16.dp))
         }
         if (time != null) {
             Text(

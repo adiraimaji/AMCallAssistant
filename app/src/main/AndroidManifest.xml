@@ -16,6 +16,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Installing the release the in-app updater downloads. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Calling Machine: a profile's call must start at the chosen time. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <!--
       Breaks the post-reboot deadlock, and cannot be obtained by deception.
@@ -303,7 +305,8 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop">
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -324,6 +327,11 @@
 
         <!-- Tasker/Locale plugin edit screens, under Plugin > AM Call Assistant. -->
         <activity
+            android:name=".calling.CallingProfilesActivity"
+            android:exported="false"
+            android:label="Calling machine profiles"
+            android:theme="@style/Theme.AmCallAssistant" />
+        <activity
             android:name=".tasker.MainEditActivity"
             android:exported="true"
             android:label="Toggle AM Call Assistant"
@@ -337,10 +345,25 @@
                 android:value="com.twofortyfouram.locale.intent.meta.ACTIVITY" />
         </activity>
         <activity
+            android:name=".tasker.CallingEditActivity"
+            android:exported="true"
+            android:label="AM Calling Machine"
+            android:theme="@style/Theme.AmCallAssistant"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="com.twofortyfouram.locale.intent.action.EDIT_SETTING" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="com.twofortyfouram.locale.intent.meta.ACTIVITY"
+                android:value="com.twofortyfouram.locale.intent.meta.ACTIVITY" />
+        </activity>
+        <activity
             android:name=".tasker.AnswerEditActivity"
             android:exported="true"
             android:label="AM Answering Machine"
-            android:theme="@style/Theme.AmCallAssistant">
+            android:theme="@style/Theme.AmCallAssistant"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="com.twofortyfouram.locale.intent.action.EDIT_SETTING" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -381,6 +404,10 @@
         -->
         <receiver
             android:name=".capture.AfterCallReceiver"
+            android:exported="false" />
+        <!-- Calling Machine: only this app's own immutable alarm reaches it. -->
+        <receiver
+            android:name=".calling.CallingAlarmReceiver"
             android:exported="false" />
 
         <!--

@@ -318,6 +318,14 @@ final class AnswerMachine {
     private boolean testIncoming;
     private volatile boolean testCall;
 
+    /** Calling Machine: the next outgoing off-hook is ours, and its call stays
+     *  up for [callLimitMs] after the greeting (0 = no limit). */
+    private long callingUntil;
+    private long callLimitMs;
+    private boolean callingMode;
+    /** How long after outgoing off-hook to wait before playing the greeting. */
+    private long callGreetingDelayMs = 1500L;
+
     private volatile long mutedAt;
     private volatile long beepEndedAt;
     private volatile long firstSoundAt;
@@ -394,7 +402,7 @@ final class AnswerMachine {
         return state;
     }
 
-    /** The user's switch and the longest message, 0 for no limit. Off
+    /** The user's switch and the call duration, 0 for no limit. Off
      *  disarms a waiting answer, and nothing else: a message under way is
      *  left to finish. */
     void configure(boolean on, long maxMessageMs) {
@@ -581,7 +589,7 @@ final class AnswerMachine {
         }
         // One look at the mode: whether the audio is up, and its way.
         int asked = effects.callPath();
-        if (asked != Checks.PATH_NONE && !testCall && mutedAt == 0) {
+        if (asked != Checks.PATH_NONE && (!testCall || callingMode) && mutedAt == 0) {
             // The room out as soon as the call's audio is up: on the Honor
             // that is before the network connects the call (see idleSignal).
             // A test plays its check tone unmuted - the phone's own recording
@@ -589,6 +597,13 @@ final class AnswerMachine {
             mute();
         }
         int path = applied(asked);
+        if (callingMode && effects.now() - answeredAt < callGreetingDelayMs) {
+            // Off-hook on an outgoing call is the phone dialling. On MIUI the
+            // greeting played straight away reaches nobody: give the far end
+            // time to answer before injecting it.
+            audioPoll = effects.schedule(this::pollAudio, AUDIO_POLL_MS);
+            return;
+        }
         if (path != Checks.PATH_NONE && offHookSeen && !ending) {
             // Not before the off-hook: a greeting, and the app's "Taking a
             // message", are for a call that is there. The mute put back
@@ -630,7 +645,7 @@ final class AnswerMachine {
             return;
         }
         state = State.GREETING;
-        play(testCall, path);
+        play(testCall && !callingMode, path);
         effects.messageStarted();
         muteWatch = effects.schedule(this::watchMute, MUTE_WATCH_MS);
     }
@@ -794,7 +809,7 @@ final class AnswerMachine {
 
     /** The test's check tone has gone out: mute now. */
     void checkToneDone() {
-        if (state == State.GREETING && testCall) {
+        if (state == State.GREETING && testCall && !callingMode) {
             toneDone = true;
             if (mutedAt == 0) {
                 mute();
@@ -929,7 +944,7 @@ final class AnswerMachine {
             }
             greetingRestarts++;
             effects.log("answer: the call's audio is up; the greeting plays again");
-            play(testCall && !toneDone, path);
+            play(testCall && !callingMode && !toneDone, path);
             replayAt = effects.now();
             audioPoll = effects.schedule(this::holdMute, AUDIO_POLL_MS);
             return;
@@ -956,7 +971,7 @@ final class AnswerMachine {
             if (!effects.muted()) {
                 if (state == State.MESSAGE) {
                     // What the caller has said is a message: kept, as at
-                    // the longest message's end (limitReached) - not dropped
+                    // the call duration's end (limitReached) - not dropped
                     // as a call whose greeting could not play.
                     effects.log("answer: the microphone did not mute again after the call moved; hanging up");
                     ending = true;
@@ -986,13 +1001,13 @@ final class AnswerMachine {
         }
         beepEndedAt = effects.now();
         state = State.MESSAGE;
-        if (!testCall && maxMessageMs <= 0) {
+        if ((!testCall && maxMessageMs <= 0) || (callingMode && callLimitMs <= 0)) {
             silenceWatch = effects.schedule(this::watchSilence, SILENCE_CHECK_MS);
             effects.log("answer: greeting played; no limit - hanging up after "
                     + SILENCE_HANGUP_MS / 1000 + " s of silence");
             return;
         }
-        long limit = testCall ? TEST_MESSAGE_MS : maxMessageMs;
+        long limit = callingMode ? callLimitMs : (testCall ? TEST_MESSAGE_MS : maxMessageMs);
         messageLimit = effects.schedule(this::limitReached, limit);
         effects.log("answer: greeting played; up to " + limit / 1000 + " s of message");
     }
@@ -1072,7 +1087,7 @@ final class AnswerMachine {
     private void limitReached() {
         messageLimit = null;
         if (state == State.MESSAGE) {
-            effects.log("answer: longest message reached, hanging up");
+            effects.log("answer: call duration reached, hanging up");
             ending = true;
             effects.hangUp();
         }
@@ -1084,6 +1099,14 @@ final class AnswerMachine {
             return;
         }
         if (!over && mutedAt > 0 && !effects.muted() && effects.callAudioUp()) {
+            // A Calling Machine call keeps the caller's microphone shut for
+            // its whole duration - an unmute here is Android's, not the user
+            // taking the call, so put it back rather than opening the room.
+            if (callingMode) {
+                effects.setMuted(true);
+                muteWatch = effects.schedule(this::watchMute, MUTE_WATCH_MS);
+                return;
+            }
             // Unmuted, and seen so twice in a row with the call still up: the
             // user took the call from the call screen. Once could be the
             // caller hanging up - the Honor clears the mute as a call ends,
@@ -1149,15 +1172,23 @@ final class AnswerMachine {
                 overEnds("answer: off-hook again after the idle; listening on");
             }
         }
-        if (state == State.IDLE && !incoming && testUntil > effects.now() && !testIncoming) {
-            // The diagnostics' outgoing test: the far end answers by itself.
-            testCall = true;
+        if (state == State.IDLE && !incoming &&
+                ((testUntil > effects.now() && !testIncoming) || callingUntil > effects.now())) {
+            // The diagnostics' outgoing test, or a Calling Machine call: the
+            // far end answers, and the greeting goes down the same path.
+            // A Calling Machine call is not a diagnostics test: it keeps the
+            // real greeting and the microphone muted for the whole call.
+            testCall = !callingMode;
             testUntil = 0;
+            callingUntil = 0;
             answered = true;
             offHookSeen = true;
             answeredAt = effects.now();
             state = State.ANSWERING;
-            audioPoll = effects.schedule(this::pollAudio, TEST_OUTGOING_WAIT_MS);
+            // Poll for the call's audio quickly, as a normal answer does:
+            // CALL_WAIT_MS is only the window in which the dialled call may
+            // go off-hook, not how long to wait before looking for its path.
+            audioPoll = effects.schedule(this::pollAudio, AUDIO_POLL_MS);
             return;
         }
         if (testUntil > 0 && !answered) {
@@ -1178,6 +1209,10 @@ final class AnswerMachine {
 
     /** An outgoing test waits this long for the far end to pick up. */
     static final long TEST_OUTGOING_WAIT_MS = 4_000L;
+    /** A called phone may take longer to ring out than a diagnostics test. */
+    static final long CALL_WAIT_MS = 60_000L;
+    /** Default wait after outgoing off-hook when a caller does not set one. */
+    static final long DEFAULT_CALL_GREETING_DELAY_MS = 1000L;
 
     /** An idle from telephony. While ringing: the caller gave up, or the
      *  call was declined. A call's end is {@link #callEnded}. */
@@ -1372,6 +1407,24 @@ final class AnswerMachine {
                 + " call in " + windowMs / 1000 + " s");
     }
 
+    /** Arm a Calling Machine call: the next call this phone places is taken,
+     *  played the greeting, and held for [seconds] (0 = no limit). */
+    boolean armCall(String number, int seconds, int delayMs) {
+        if (state != State.IDLE || testCall) {
+            effects.log("answer: calling machine busy, call not placed");
+            return false;
+        }
+        callingUntil = effects.now() + CALL_WAIT_MS;
+        callLimitMs = seconds <= 0 ? 0L : (long) seconds * 1000L;
+        // Zero is a real choice: play the greeting immediately. Only a
+        // negative value (an older app) means use the default.
+        callGreetingDelayMs = delayMs < 0 ? DEFAULT_CALL_GREETING_DELAY_MS : delayMs;
+        callingMode = true;
+        effects.log("answer: calling " + number + ", up to "
+                + (callLimitMs == 0 ? "no limit" : callLimitMs / 1000 + " s"));
+        return true;
+    }
+
     private void reset() {
         ringAt = 0;
         answeredAt = 0;
@@ -1395,6 +1448,10 @@ final class AnswerMachine {
         refused = false;
         greetingFailed = false;
         testCall = false;
+        callingMode = false;
+        callingUntil = 0;
+        callLimitMs = 0;
+        callGreetingDelayMs = DEFAULT_CALL_GREETING_DELAY_MS;
         toneDone = false;
         greetingRestarts = 0;
         interruptedAt = 0;

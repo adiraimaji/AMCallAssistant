@@ -83,6 +83,8 @@ internal object RecordingTags {
         /** A part joined mid-call: its call's start, in UTC ms
          *  (Recording.callAt). */
         val callAt: Long? = null,
+        /** A call the Calling Machine placed (RecordingMarks.Calling). */
+        val calling: Boolean = false,
     )
 
     /** Says the fields are AM Call Assistant's, and which version of them. */
@@ -95,6 +97,7 @@ internal object RecordingTags {
     private const val START = "JEMREC_START"
     private const val PART = "JEMREC_PART"
     private const val CALL = "JEMREC_CALL"
+    private const val CALLING = "JEMREC_CALLING"
 
     /** A caller's name is cut to this many characters in the tags: a name,
      *  not a paragraph, and the page must stay [PACKET_SIZE]. */
@@ -112,6 +115,7 @@ internal object RecordingTags {
         facts.startedAt?.let { add("$START=$it") }
         if (facts.part) add("$PART=1")
         facts.callAt?.let { add("$CALL=$it") }
+        if (facts.calling) add("$CALLING=1")
     }
 
     /** What [fields] say; null if they are not AM Call Assistant's. Field names are
@@ -132,6 +136,7 @@ internal object RecordingTags {
             startedAt = byName[START]?.toLongOrNull(),
             part = byName[PART] == "1",
             callAt = byName[CALL]?.toLongOrNull(),
+            calling = byName[CALLING] == "1",
         )
     }
 

@@ -2,7 +2,7 @@ package com.adiraimaji.amcallassistant.shell;
 
 /**
  * The answering machine's settings as the app sends them, "on,seconds,route":
- * "1,60,music", the seconds being the longest message, 0 for no limit. In the spawn environment (AMCA_ANSWER) and over the socket
+ * "1,60,music", the seconds being the call duration, 0 for no limit. In the spawn environment (AMCA_ANSWER) and over the socket
  * (Wire.COMMAND_ANSWER_SETTINGS). Anything unreadable is OFF - the same fail-closed
  * rule as the recording mode: a call answered against the user's choice is
  * worse than one the carrier's voicemail takes.

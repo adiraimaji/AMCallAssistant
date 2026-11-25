@@ -75,11 +75,18 @@ internal const val SETTINGS_BAR = "settings-bar"
  * "Settings", not Deck's and Multitrack's SETTINGS.
  */
 @Composable
-internal fun SettingsBar(title: String, busy: Boolean, onBack: () -> Unit) {
+internal fun SettingsBar(
+    title: String,
+    busy: Boolean,
+    /** An action at the bar's end - Calling Machine's Save in its editor.
+     *  Kept before [onBack] so callers using a trailing lambda still mean Back. */
+    action: (@Composable () -> Unit)? = null,
+    onBack: () -> Unit,
+) {
     when (LocalLook.current) {
-        Look.MEMO -> MemoBar(title, busy, onBack)
-        Look.DECK -> DeckBar(title, busy, onBack)
-        Look.MULTITRACK -> MultitrackBar(title, busy, onBack)
+        Look.MEMO -> MemoBar(title, busy, action, onBack)
+        Look.DECK -> DeckBar(title, busy, action, onBack)
+        Look.MULTITRACK -> MultitrackBar(title, busy, action, onBack)
     }
 }
 
@@ -90,7 +97,7 @@ private fun Modifier.barTitle(title: String) = clearAndSetSemantics {
 }
 
 @Composable
-private fun MemoBar(title: String, busy: Boolean, onBack: () -> Unit) {
+private fun MemoBar(title: String, busy: Boolean, action: (@Composable () -> Unit)?, onBack: () -> Unit) {
     val c = memoColors()
     val scheme = MaterialTheme.colorScheme
     Row(
@@ -125,6 +132,7 @@ private fun MemoBar(title: String, busy: Boolean, onBack: () -> Unit) {
             autoSize = oneLineAutoSize(min = 15.dp, max = 22.sp),
             modifier = Modifier.weight(1f).barTitle(title),
         )
+        action?.invoke()
         Box(Modifier.size(24.dp)) {
             if (busy) CircularProgressIndicator(Modifier.fillMaxSize(), color = scheme.primary, strokeWidth = 2.5.dp)
         }
@@ -135,7 +143,7 @@ private fun MemoBar(title: String, busy: Boolean, onBack: () -> Unit) {
 private val CHASE_WIDTH = (6 * 7 + 5 * 2).dp
 
 @Composable
-private fun DeckBar(title: String, busy: Boolean, onBack: () -> Unit) {
+private fun DeckBar(title: String, busy: Boolean, action: (@Composable () -> Unit)?, onBack: () -> Unit) {
     val c = deckColors()
     val glow = deckGlow(c)
     Row(
@@ -185,6 +193,7 @@ private fun DeckBar(title: String, busy: Boolean, onBack: () -> Unit) {
                 if (busy) SegmentChase(c.ink, count = 6)
             }
         }
+        action?.invoke()
     }
 }
 
@@ -192,7 +201,7 @@ private fun DeckBar(title: String, busy: Boolean, onBack: () -> Unit) {
 private val SCAN_WIDTH = (6 * 6 + 5 * 3).dp
 
 @Composable
-private fun MultitrackBar(title: String, busy: Boolean, onBack: () -> Unit) {
+private fun MultitrackBar(title: String, busy: Boolean, action: (@Composable () -> Unit)?, onBack: () -> Unit) {
     val c = multitrackColors()
     Row(
         Modifier
@@ -219,6 +228,7 @@ private fun MultitrackBar(title: String, busy: Boolean, onBack: () -> Unit) {
             autoSize = oneLineAutoSize(min = 12.dp, max = 18.sp),
             modifier = Modifier.weight(1f).barTitle(title),
         )
+        action?.invoke()
         Box(Modifier.width(SCAN_WIDTH)) {
             if (busy) LedScan(c.ledOn, c.ledOff, count = 6)
         }

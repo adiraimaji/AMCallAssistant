@@ -1,5 +1,9 @@
 # How AM Call Assistant works
 
+> **Modified from JemRec.** This document was changed for AM Call Assistant, an
+> Apache-2.0 licensed fork of JemRec. The changes made to the original project
+> are listed in [CHANGES.md](../CHANGES.md); see also the [README](../README.md).
+
 The design, the measurements behind it, and every feature in depth. The
 [README](../README.md) is the short version; this is the long one, for anyone
 who wants to know why a call recorder for unrooted Android is built the way
@@ -2265,7 +2269,7 @@ settings.
   the app's real settings. A fire with no call or no recorder clears it at
   once, so a failed run leaves the app exactly as it was. A *Play* button in
   the edit screen speaks the words with the chosen voice before saving.
-  **Longest message** is a typed number of seconds rather than a fixed list:
+  **Call duration** is a typed number of seconds rather than a fixed list:
   blank means follow the app's setting, 0 means no limit, and any other number
   is used however large (300 is five minutes). A Tasker variable such as
   `%LONGEST` is replaced in the config before the fire; an invalid value - an

@@ -137,6 +137,8 @@ class FrozenNamesTest {
         val MAIN_COMPONENTS = setOf(
             ".AmCallAssistantApp",
             ".MainActivity",
+            ".calling.CallingAlarmReceiver",
+            ".calling.CallingProfilesActivity",
             ".RecordPromptActivity",
             ".TurnOffQuestionActivity",
             ".capture.AfterCallReceiver",
@@ -149,6 +151,7 @@ class FrozenNamesTest {
             ".ui.PairingService",
             ".ui.RecorderTile",
             ".tasker.AnswerEditActivity",
+            ".tasker.CallingEditActivity",
             ".tasker.FireReceiver",
             ".tasker.MainEditActivity",
             ".recordings.RecordingsFileProvider",

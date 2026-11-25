@@ -125,6 +125,26 @@ internal object RecordingMarks {
         }
     }
 
+    /** Recordings of calls the Calling Machine placed. */
+    object Calling {
+        private const val KEY_CALLING = "calling_recordings"
+
+        fun all(context: Context): Set<String> =
+            Prefs.of(context).getStringSet(KEY_CALLING, emptySet())?.toSet() ?: emptySet()
+
+        @Synchronized
+        fun mark(context: Context, names: Collection<String>, listed: Set<String> = emptySet()) {
+            val kept = bounded(context, all(context) + names, listed) { it }
+            Prefs.of(context).edit { putStringSet(KEY_CALLING, kept) }
+        }
+
+        @Synchronized
+        internal fun renamed(context: Context, from: String, to: String) {
+            val now = all(context)
+            if (from in now) Prefs.of(context).edit { putStringSet(KEY_CALLING, now - from + to) }
+        }
+    }
+
     /**
      * The recordings that are one of a call's - a recorder lost mid-call
      * having left more than one, joined mid-call, or stopped before the
@@ -297,6 +317,7 @@ internal object RecordingMarks {
     fun renamed(context: Context, from: String, to: String) {
         Keep.renamed(context, from, to)
         Messages.renamed(context, from, to)
+        Calling.renamed(context, from, to)
         Directions.renamed(context, from, to)
         Starts.renamed(context, from, to)
         Parts.renamed(context, from, to)
@@ -346,6 +367,8 @@ internal object RecordingMarks {
         if (messages.isNotEmpty()) Messages.mark(context, messages, listed)
         val keeps = found.filter { it.second.kept }.map { it.first }
         if (keeps.isNotEmpty()) Keep.set(context, keeps, kept = true)
+        val calling = found.filter { it.second.calling }.map { it.first }
+        if (calling.isNotEmpty()) Calling.mark(context, calling, listed)
         Directions.note(context, found.mapNotNull { (name, f) -> f.incoming?.let { name to it } }.toMap(), listed)
         Starts.note(context, found.mapNotNull { (name, f) -> f.startedAt?.let { name to Starts.Start(it, f.callAt) } }.toMap(), listed)
         Parts.mark(context, found.filter { it.second.part }.map { it.first }, listed)
@@ -367,10 +390,12 @@ internal object RecordingMarks {
         val kept = Keep.all(context)
         val messages = Messages.all(context)
         val parts = Parts.all(context)
+        val calling = Calling.all(context)
         return recordings
             .map { if (it.name in kept) it.copy(kept = true) else it }
             .map { if (it.name in messages) it.copy(message = true) else it }
             .map { if (it.name in parts) it.copy(part = true) else it }
+            .map { if (it.name in calling) it.copy(calling = true) else it }
     }
 
     /**

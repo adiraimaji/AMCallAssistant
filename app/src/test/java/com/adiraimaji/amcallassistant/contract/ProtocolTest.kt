@@ -50,8 +50,8 @@ class ProtocolTest {
         assertTrue("no COMMAND_ constants found: is the pattern stale?", sent.isNotEmpty())
         val answered = replies.map { it.command.take(1) }.toSet()
         // A (the handshake) is answered in bytes - the recorder's nonce and its
-        // MAC - not a line, and R streams audio: neither is in the fixture.
-        assertEquals(emptySet<String>(), sent - answered - setOf("A", "R"))
+        // MAC - not a line; R streams audio; U places a Calling Machine call.
+        assertEquals(emptySet<String>(), sent - answered - setOf("A", "R", "U"))
     }
 
     @Test

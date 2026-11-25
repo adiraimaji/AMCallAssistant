@@ -5,6 +5,7 @@ import android.telecom.Call
 import android.telecom.InCallService
 import android.util.Log
 import com.adiraimaji.amcallassistant.answering.AnswerConditions
+import com.adiraimaji.amcallassistant.answering.AnswerGreetings
 import com.adiraimaji.amcallassistant.answering.AnsweringMachine
 import com.adiraimaji.amcallassistant.answering.EmergencyPause
 import com.adiraimaji.amcallassistant.answering.Greeting
@@ -129,7 +130,7 @@ class CallTracker : InCallService() {
     ): AnsweringMachine.Ringing {
         return AnsweringMachine.Ringing(
             enabled = AnsweringMachine.enabled(context),
-            greeting = Greeting.present(context),
+            greeting = AnswerGreetings.selectedPresent(context),
             recorderOn = RecorderSwitch.isOn(context),
             trackingOn = CallTracking.enabled(context),
             otherCalls = others,

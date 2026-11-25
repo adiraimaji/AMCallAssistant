@@ -34,8 +34,19 @@ object PluginContract {
     /** Sentinel in a config: read the current app value when the action fires. */
     const val DEFAULT = "default"
 
+    /** Which of the two greeting fields the edit screen has selected. Both
+     *  may hold a value now; this says which one the action uses. */
+    const val GREETING_TEXT = "text"
+    const val GREETING_FILE = "file"
+    const val GREETING_RECORD = "record"
+
+    /** The extra item in the profile dropdown: use the fields below, typed
+     *  here, instead of a saved profile. */
+    const val PROFILE_CUSTOM = "custom"
+
     const val KIND_MAIN = "main"
     const val KIND_ANSWER = "answer"
+    const val KIND_CALL = "call"
 
     /** Which field of the answering action a dropdown chose. All four use
      *  [DEFAULT] to mean "keep the value the user chose in the app". */
@@ -62,22 +73,61 @@ object PluginContract {
         val longest: String = DEFAULT,
         val greetingText: String = "",
         val voiceId: String = DEFAULT,
+        /** A path (or content URI) to an audio file, or blank. Both this and
+         *  [greetingText] may be filled; [greetingKind] says which is used.
+         *  Tasker replaces %variables in it before the action fires. */
+        val audioPath: String = "",
+        /** [GREETING_TEXT] or [GREETING_FILE]. Blank in old saved actions,
+         *  which keep the old precedence: audio file before written text. */
+        val greetingKind: String = "",
+        /** Calling Machine: who to call, how long to stay, and what to do if
+         *  a call is already up ("wait", "discard" or "now"). */
+        val callNumber: String = "",
+        val callDuration: String = "message",
+        val callBusy: String = "wait",
+        /** Milliseconds after outgoing off-hook before the greeting plays. */
+        val callDelayMs: Int = 1000,
+        /** Profile chosen in the dropdown, or blank/[PROFILE_CUSTOM] for the
+         *  fields typed here. An empty string is how old actions are saved. */
+        val answerProfileId: String = "",
+        val callProfileId: String = "",
+        /** Id of the recording made in the editor while Custom is selected.
+         *  Its PCM is kept in the app's per-profile greeting store. */
+        val customGreetingId: String = "",
     ) {
         /** The voice choices offered by the edit screen, as a stable string. */
         fun blurb(): String = when (kind) {
             KIND_MAIN -> "Toggle AM Call Assistant: ${if (revert) "revert" else if (mainOn) "on" else "off"}"
+            KIND_CALL -> "AM Calling Machine: ${callNumber.ifBlank { "number not set" }}, " +
+                when (callDuration) {
+                    "message" -> "after greeting"
+                    "none" -> "no limit"
+                    else -> "$callDuration seconds"
+                }
             else -> buildString {
                 append("AM Answering Machine: ")
                 append(if (delay == DEFAULT) "answer's setting" else "after ${delay}s")
                 if (dnd != DEFAULT) append(", DND ${Dnd.of(dnd).name.lowercase()}")
                 if (longest != DEFAULT) append(", longest ${longestLabel(longest)}")
-                if (greetingText.isNotBlank()) append(", greeting")
+                when (greetingKind) {
+                    GREETING_TEXT -> append(", greeting")
+                    GREETING_FILE -> append(", audio file")
+                    else -> { // old action: audio file took precedence
+                        if (greetingText.isNotBlank()) append(", greeting")
+                        if (audioPath.isNotBlank()) append(", audio file")
+                    }
+                }
             }
         }
 
         fun serialise(): String = listOf(
-            "2", // version 2: the greeting text is plain so Tasker can see and
-            // replace its %variables before the fire broadcast.
+            // Version 8 adds the id of a greeting recorded in the editor while
+            // Custom is selected; version 7 added the two profile choices,
+            // version 6 the chosen greeting type, version 5 the Calling Machine
+            // greeting delay, version 4 the other Calling Machine fields,
+            // version 3 the audio path, and version 2 kept greeting text plain
+            // so Tasker can replace its %variables.
+            "8",
             kind,
             if (revert) "1" else "0",
             if (mainOn) "1" else "0",
@@ -86,16 +136,131 @@ object PluginContract {
             dnd,
             longest,
             // Escape only our separator and newlines; %BATT stays visible.
-            greetingText.replace("|", "%7C").replace("\n", "%0A").replace("\r", ""),
+            escape(greetingText),
             java.util.Base64.getEncoder().encodeToString(voiceId.toByteArray(Charsets.UTF_8)),
+            escape(audioPath),
+            escape(callNumber),
+            escape(callDuration),
+            escape(callBusy),
+            callDelayMs.toString(),
+            escape(greetingKind),
+            escape(answerProfileId),
+            escape(callProfileId),
+            escape(customGreetingId),
         ).joinToString("|")
 
         companion object {
+            private fun escape(value: String): String =
+                value.replace("|", "%7C").replace("\n", "%0A").replace("\r", "")
+
+            private fun unescape(value: String): String =
+                value.replace("%0A", "\n").replace("%7C", "|")
+
             fun parse(value: String?): Config? {
                 if (value == null) return null
                 val f = value.split("|")
-                if (f.size != 10) return null
-                return when (f[0]) {
+                return when {
+                    f.size == 19 && f[0] == "8" -> Config(
+                        kind = f[1],
+                        revert = f[2] == "1",
+                        mainOn = f[3] == "1",
+                        answerOn = f[4] == "1",
+                        delay = f[5],
+                        dnd = f[6],
+                        longest = f[7],
+                        greetingText = unescape(f[8]),
+                        voiceId = String(java.util.Base64.getDecoder().decode(f[9]), Charsets.UTF_8),
+                        audioPath = unescape(f[10]),
+                        callNumber = unescape(f[11]),
+                        callDuration = unescape(f[12]),
+                        callBusy = unescape(f[13]),
+                        callDelayMs = f[14].toIntOrNull()?.takeIf { it >= 0 } ?: 1000,
+                        greetingKind = unescape(f[15]),
+                        answerProfileId = unescape(f[16]),
+                        callProfileId = unescape(f[17]),
+                        customGreetingId = unescape(f[18]),
+                    )
+                    f.size == 18 && f[0] == "7" -> Config(
+                        kind = f[1],
+                        revert = f[2] == "1",
+                        mainOn = f[3] == "1",
+                        answerOn = f[4] == "1",
+                        delay = f[5],
+                        dnd = f[6],
+                        longest = f[7],
+                        greetingText = unescape(f[8]),
+                        voiceId = String(java.util.Base64.getDecoder().decode(f[9]), Charsets.UTF_8),
+                        audioPath = unescape(f[10]),
+                        callNumber = unescape(f[11]),
+                        callDuration = unescape(f[12]),
+                        callBusy = unescape(f[13]),
+                        callDelayMs = f[14].toIntOrNull()?.takeIf { it >= 0 } ?: 1000,
+                        greetingKind = unescape(f[15]),
+                        answerProfileId = unescape(f[16]),
+                        callProfileId = unescape(f[17]),
+                    )
+                    f.size == 16 && f[0] == "6" -> Config(
+                        kind = f[1],
+                        revert = f[2] == "1",
+                        mainOn = f[3] == "1",
+                        answerOn = f[4] == "1",
+                        delay = f[5],
+                        dnd = f[6],
+                        longest = f[7],
+                        greetingText = unescape(f[8]),
+                        voiceId = String(java.util.Base64.getDecoder().decode(f[9]), Charsets.UTF_8),
+                        audioPath = unescape(f[10]),
+                        callNumber = unescape(f[11]),
+                        callDuration = unescape(f[12]),
+                        callBusy = unescape(f[13]),
+                        callDelayMs = f[14].toIntOrNull()?.takeIf { it >= 0 } ?: 1000,
+                        greetingKind = unescape(f[15]),
+                    )
+                    f.size == 15 && f[0] == "5" -> Config(
+                        kind = f[1],
+                        revert = f[2] == "1",
+                        mainOn = f[3] == "1",
+                        answerOn = f[4] == "1",
+                        delay = f[5],
+                        dnd = f[6],
+                        longest = f[7],
+                        greetingText = unescape(f[8]),
+                        voiceId = String(java.util.Base64.getDecoder().decode(f[9]), Charsets.UTF_8),
+                        audioPath = unescape(f[10]),
+                        callNumber = unescape(f[11]),
+                        callDuration = unescape(f[12]),
+                        callBusy = unescape(f[13]),
+                        callDelayMs = f[14].toIntOrNull()?.takeIf { it >= 0 } ?: 1000,
+                    )
+                    f.size == 14 && f[0] == "4" -> Config(
+                        kind = f[1],
+                        revert = f[2] == "1",
+                        mainOn = f[3] == "1",
+                        answerOn = f[4] == "1",
+                        delay = f[5],
+                        dnd = f[6],
+                        longest = f[7],
+                        greetingText = unescape(f[8]),
+                        voiceId = String(java.util.Base64.getDecoder().decode(f[9]), Charsets.UTF_8),
+                        audioPath = unescape(f[10]),
+                        callNumber = unescape(f[11]),
+                        callDuration = unescape(f[12]),
+                        callBusy = unescape(f[13]),
+                    )
+                    f.size == 11 && f[0] == "3" -> Config(
+                        kind = f[1],
+                        revert = f[2] == "1",
+                        mainOn = f[3] == "1",
+                        answerOn = f[4] == "1",
+                        delay = f[5],
+                        dnd = f[6],
+                        longest = f[7],
+                        greetingText = unescape(f[8]),
+                        voiceId = String(java.util.Base64.getDecoder().decode(f[9]), Charsets.UTF_8),
+                        audioPath = unescape(f[10]),
+                    )
+                    f.size != 10 -> null
+                    else -> when (f[0]) {
                     "2" -> Config(
                         kind = f[1],
                         revert = f[2] == "1",
@@ -104,7 +269,7 @@ object PluginContract {
                         delay = f[5],
                         dnd = f[6],
                         longest = f[7],
-                        greetingText = f[8].replace("%0A", "\n").replace("%7C", "|"),
+                        greetingText = unescape(f[8]),
                         voiceId = String(java.util.Base64.getDecoder().decode(f[9]), Charsets.UTF_8),
                     )
                     "1" -> Config( // old saved actions
@@ -119,6 +284,7 @@ object PluginContract {
                         voiceId = String(java.util.Base64.getDecoder().decode(f[9]), Charsets.UTF_8),
                     )
                     else -> null
+                }
                 }
             }
         }
@@ -165,7 +331,7 @@ object PluginContract {
             ?: current
 
     /**
-     * The longest message is a free-text number of seconds, or a Tasker
+     * The call duration is a free-text number of seconds, or a Tasker
      * variable which Tasker has already replaced in the config by the time
      * this runs. Blank (or the sentinel) means follow the app's setting, 0 is
      * no limit, and any other number is used as seconds however large. An

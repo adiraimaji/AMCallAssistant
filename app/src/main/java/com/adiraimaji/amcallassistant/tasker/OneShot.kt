@@ -1,6 +1,8 @@
 package com.adiraimaji.amcallassistant.tasker
 
 import android.content.Context
+import com.adiraimaji.amcallassistant.answering.AnswerGreetings
+import com.adiraimaji.amcallassistant.answering.AnswerProfiles
 import com.adiraimaji.amcallassistant.answering.AnsweringMachine
 import com.adiraimaji.amcallassistant.answering.Greeting
 
@@ -43,9 +45,12 @@ object OneShot {
     /** The answering values to use: the override when set, else the prefs.
      *  Used by [AnsweringMachine]'s read path so no preference is touched. */
     fun enabled(context: Context): Boolean = active?.enabled ?: AnsweringMachine.realEnabled(context)
-    fun delay(context: Context): Int = active?.delay ?: AnsweringMachine.realDelay(context)
-    fun dndShort(context: Context): Boolean = active?.dndShort ?: AnsweringMachine.realDndShort(context)
-    fun longest(context: Context): Int = active?.longest ?: AnsweringMachine.realLongest(context)
+    fun delay(context: Context): Int = active?.delay ?: (AnswerProfiles.default(context)?.delay
+        ?: AnsweringMachine.realDelay(context))
+    fun dndShort(context: Context): Boolean = active?.dndShort ?: (AnswerProfiles.default(context)?.dndShort
+        ?: AnsweringMachine.realDndShort(context))
+    fun longest(context: Context): Int = active?.longest ?: (AnswerProfiles.default(context)?.longest
+        ?: AnsweringMachine.realLongest(context))
 
     /** What to send the daemon in `wire`: on only with a greeting to play. */
     fun wireOn(context: Context): Boolean {
@@ -53,7 +58,7 @@ object OneShot {
         return if (values != null) {
             values.enabled && (values.greeting != null || Greeting.present(context))
         } else {
-            AnsweringMachine.realEnabled(context) && Greeting.present(context)
+            AnsweringMachine.realEnabled(context) && AnswerGreetings.selectedPresent(context)
         }
     }
 }

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
@@ -26,12 +27,18 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -274,10 +281,19 @@ internal fun AppScaffold(state: UiState, vm: MainViewModel) {
     // selection, and dropping them to the home screen instead would lose the
     // picking they had just done.
     BackHandler(enabled = selecting || offHome) {
-        if (selecting) vm.clearSelection() else vm.back()
+        when {
+            selecting -> vm.clearSelection()
+            // Calling Machine unwinds its own editor first; only the list's
+            // Back leaves the screen for Settings.
+            state.screen == Screen.CALLING_MACHINE -> vm.callingBack()
+            state.screen == Screen.ANSWERING_MACHINE -> vm.answerBack()
+            else -> vm.back()
+        }
     }
 
     val snackbars = remember { SnackbarHostState() }
+    val callingEditorOpen by vm.callingEditorOpen.collectAsStateWithLifecycle()
+    val answerEditorOpen by vm.answerEditorOpen.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) {
         vm.notices.collect { snackbars.showSnackbar(it) }
     }
@@ -295,6 +311,24 @@ internal fun AppScaffold(state: UiState, vm: MainViewModel) {
             // exploring the screen would read out and reach the rows.
             modifier = if (state.earCovered) Modifier.clearAndSetSemantics { } else Modifier,
             snackbarHost = { SnackbarHost(snackbars) },
+            floatingActionButton = {
+                // The list's way in: a new, empty profile. The editor has its
+                // own way out - Back and Save in the bar - so the button is
+                // only here while the list is showing.
+                if (ready && !callingEditorOpen && !answerEditorOpen &&
+                    (state.screen == Screen.CALLING_MACHINE || state.screen == Screen.ANSWERING_MACHINE)
+                ) {
+                    val haptics = LocalHapticFeedback.current
+                    ExtendedFloatingActionButton(
+                        onClick = {
+                            haptics.tap()
+                            if (state.screen == Screen.CALLING_MACHINE) vm.newCallingProfile() else vm.newAnswerProfile()
+                        },
+                        icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                        text = { Text("New profile") },
+                    )
+                }
+            },
             topBar = {
                 // No bar during setup. There is nothing to configure yet and no
                 // second screen to reach, so a gear there would be a dead end.
@@ -316,7 +350,11 @@ internal fun AppScaffold(state: UiState, vm: MainViewModel) {
             // branch with Settings, a result that came in while home or Recently
             // deleted was up waited, and jumped Diagnostics to the bottom when it
             // was next opened.
-            val subScroll = key(state.screen) { rememberScrollState() }
+            // The Calling Machine's two panes each start at their own top: the
+            // editor is a new page, not the list scrolled down to a card, and
+            // Back lands on the list at its start. Other screens keep one
+            // place, as before.
+            val subScroll = key(state.screen, callingEditorOpen, answerEditorOpen) { rememberScrollState() }
             // Setup's own: Settings' brought back after the process ended was
             // laid out over the checking card first, cut to its height, and
             // Settings came back at its top (review, 2026-11-18).
@@ -442,6 +480,9 @@ internal fun AppScaffold(state: UiState, vm: MainViewModel) {
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(padding)
+                        // Only the scrollable content shrinks above the
+                        // keyboard; the Scaffold's top bar stays pinned.
+                        .imePadding()
                         // verticalScroll BEFORE the 16dp, so the scroll viewport
                         // reaches up to the header rule and content clips exactly
                         // there as it scrolls under it.
@@ -463,6 +504,7 @@ internal fun AppScaffold(state: UiState, vm: MainViewModel) {
                             Screen.MESSENGER_CALLS -> MessengerCallsScreen(state, vm)
                             Screen.DIAGNOSTICS -> DiagnosticsScreen(state, vm)
                             Screen.ANSWERING_MACHINE -> AnsweringMachineScreen(state, vm)
+                            Screen.CALLING_MACHINE -> CallingMachineScreen(vm)
                             Screen.WHEN_OFF -> WhenOffScreen(state, vm)
                             else -> SettingsScreen(state, vm, askForCallLog, pickFolder)
                         }
@@ -525,19 +567,53 @@ internal fun AppHeader(state: UiState, vm: MainViewModel, panel: (@Composable ()
         HomeHeader(state, vm, answer.enabled, panel)
         return
     }
+    val callingEditorOpen by vm.callingEditorOpen.collectAsStateWithLifecycle()
+    val answerEditorOpen by vm.answerEditorOpen.collectAsStateWithLifecycle()
+    val callingSaveEnabled by vm.callingSaveEnabled.collectAsStateWithLifecycle()
+    val answerSaveEnabled by vm.answerSaveEnabled.collectAsStateWithLifecycle()
     SettingsBar(
         title = when (state.screen) {
             Screen.WHOSE_CALLS -> "Whose calls to keep"
             Screen.MESSENGER_CALLS -> "Messenger calls"
             Screen.DIAGNOSTICS -> "Diagnostics"
-            Screen.ANSWERING_MACHINE -> "Answering machine"
+            Screen.ANSWERING_MACHINE -> "Answering Machine"
+            Screen.CALLING_MACHINE -> "Calling Machine"
             Screen.TRASH -> "Recently deleted"
             Screen.THEME -> "Theme"
             Screen.WHEN_OFF -> "When AM Call Assistant is off"
             else -> "Settings"
         },
         busy = state.busy,
-        onBack = { haptics.tap(); vm.back() },
+        // The editor's Save takes the place of the old bottom Save profile
+        // button: the same save function, run through the view model so the
+        // bar and the screen do not each need a copy of the draft.
+        action = when {
+            state.screen == Screen.CALLING_MACHINE && callingEditorOpen -> {
+                {
+                    TextButton(
+                        onClick = { haptics.tap(); vm.requestCallingSave() },
+                        enabled = callingSaveEnabled,
+                    ) { Text("Save") }
+                }
+            }
+            state.screen == Screen.ANSWERING_MACHINE && answerEditorOpen -> {
+                {
+                    TextButton(
+                        onClick = { haptics.tap(); vm.requestAnswerSave() },
+                        enabled = answerSaveEnabled,
+                    ) { Text("Save") }
+                }
+            }
+            else -> null
+        },
+        onBack = {
+            haptics.tap()
+            when (state.screen) {
+                Screen.CALLING_MACHINE -> vm.callingBack()
+                Screen.ANSWERING_MACHINE -> vm.answerBack()
+                else -> vm.back()
+            }
+        },
     )
 }
 

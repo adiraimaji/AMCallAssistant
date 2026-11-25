@@ -490,14 +490,20 @@ class BehaviourTest : ScreenTest() {
         fun machine(test: String?) = viewModel(state, AnswerUi(greetingSeconds = 6.0, test = test, testUntil = Fixtures.NOW + 60_000))
         val shown = mutableStateOf(machine("arming"))
         show { AppScaffold(state, shown.value) }
-        compose.onNodeWithText("Delete").performScrollTo().assertIsNotEnabled()
+        fun inEditor() { compose.onNodeWithText("New profile", useUnmergedTree = true).performClick() }
+        fun delete() = compose.onNodeWithText("Delete").performScrollTo()
+        inEditor()
+        delete().assertIsNotEnabled()
         shown.value = machine("armed")
-        compose.onNodeWithText("Delete").performScrollTo().assertIsNotEnabled()
+        inEditor()
+        delete().assertIsNotEnabled()
         shown.value = machine("running")
-        compose.onNodeWithText("Delete").performScrollTo().assertIsNotEnabled()
+        inEditor()
+        delete().assertIsNotEnabled()
         // No test on: Delete as before.
         shown.value = machine(null)
-        compose.onNodeWithText("Delete").performScrollTo().assertIsEnabled()
+        inEditor()
+        delete().assertIsEnabled()
     }
 
     /** While a take is made a greeting of, or the recorder's microphone may
@@ -508,16 +514,20 @@ class BehaviourTest : ScreenTest() {
         val state = Fixtures.ready().copy(screen = Screen.ANSWERING_MACHINE)
         val shown = mutableStateOf(viewModel(state, AnswerUi(greetingSeconds = 6.0, processingTake = true)))
         show { AppScaffold(state, shown.value) }
-        compose.onNodeWithText("Record again").performScrollTo().assertIsNotEnabled()
+        fun inEditor() { compose.onNodeWithText("New profile", useUnmergedTree = true).performClick() }
+        inEditor()
+        compose.onNodeWithText("Record").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Delete").assertIsNotEnabled()
         shown.value = viewModel(state, AnswerUi(greetingSeconds = 6.0, takeListening = true))
-        compose.onNodeWithText("Record again").performScrollTo().assertIsNotEnabled()
+        inEditor()
+        compose.onNodeWithText("Record").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Delete").assertIsNotEnabled()
         // No "Tap to play it" on a row that takes no tap.
         compose.onNodeWithText("Waiting for the recorder...").assertHasNoClickAction()
         compose.onAllNodesWithText("Tap to play it", substring = true).assertCountEquals(0)
         shown.value = viewModel(state, AnswerUi(greetingSeconds = 6.0))
-        compose.onNodeWithText("Record again").performScrollTo().assertIsEnabled()
+        inEditor()
+        compose.onNodeWithText("Record").performScrollTo().assertIsEnabled()
         compose.onNodeWithText("Delete").assertIsEnabled()
     }
 
@@ -531,12 +541,13 @@ class BehaviourTest : ScreenTest() {
         com.adiraimaji.amcallassistant.answering.Greeting.hold(elsewhere)
         try {
             show { AppScaffold(state, vm) }
-            compose.onNodeWithText("Record again").performScrollTo().assertIsNotEnabled()
+            compose.onNodeWithText("New profile", useUnmergedTree = true).performClick()
+            compose.onNodeWithText("Record").performScrollTo().assertIsNotEnabled()
             compose.onNodeWithText("Delete").assertIsNotEnabled()
             compose.onNodeWithText("Waiting for the recorder...").assertHasNoClickAction()
             com.adiraimaji.amcallassistant.answering.Greeting.letGo(elsewhere)
             compose.waitForIdle()
-            compose.onNodeWithText("Record again").performScrollTo().assertIsEnabled()
+            compose.onNodeWithText("Record").performScrollTo().assertIsEnabled()
             compose.onNodeWithText("Delete").assertIsEnabled()
         } finally {
             com.adiraimaji.amcallassistant.answering.Greeting.letGo(elsewhere)
@@ -553,11 +564,12 @@ class BehaviourTest : ScreenTest() {
         com.adiraimaji.amcallassistant.answering.Greeting.make(elsewhere)
         try {
             show { AppScaffold(state, vm) }
-            compose.onNodeWithText("Record again").performScrollTo().assertIsNotEnabled()
+            compose.onNodeWithText("New profile", useUnmergedTree = true).performClick()
+            compose.onNodeWithText("Record").performScrollTo().assertIsNotEnabled()
             compose.onNodeWithText("Delete").assertIsNotEnabled()
             com.adiraimaji.amcallassistant.answering.Greeting.made(elsewhere)
             compose.waitForIdle()
-            compose.onNodeWithText("Record again").performScrollTo().assertIsEnabled()
+            compose.onNodeWithText("Record").performScrollTo().assertIsEnabled()
             compose.onNodeWithText("Delete").assertIsEnabled()
         } finally {
             com.adiraimaji.amcallassistant.answering.Greeting.made(elsewhere)
@@ -575,6 +587,7 @@ class BehaviourTest : ScreenTest() {
         com.adiraimaji.amcallassistant.answering.Greeting.make(elsewhere)
         try {
             show { AppScaffold(state, vm) }
+            compose.onNodeWithText("New profile", useUnmergedTree = true).performClick()
             compose.onNodeWithText("No greeting yet").performScrollTo().assertExists()
             com.adiraimaji.amcallassistant.answering.Greeting.save(app, ByteArray(com.adiraimaji.amcallassistant.answering.Greeting.RATE * 2 * 3))
             com.adiraimaji.amcallassistant.answering.Greeting.made(elsewhere)
@@ -594,13 +607,14 @@ class BehaviourTest : ScreenTest() {
             AnswerUi(greetingSeconds = 6.0, takeListening = true, greetingProblem = "Nothing was heard. Hold the phone as for a call, and speak."),
         )
         show { AppScaffold(state, vm) }
+        compose.onNodeWithText("New profile", useUnmergedTree = true).performClick()
         fun colourOf(text: String): androidx.compose.ui.graphics.Color {
             val laid = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
-            compose.onNodeWithText(text, useUnmergedTree = true).performScrollTo().fetchSemanticsNode()
+            compose.onNodeWithText(text, substring = true, useUnmergedTree = true).performScrollTo().fetchSemanticsNode()
                 .config[androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult].action?.invoke(laid)
             return laid.first().layoutInput.style.color
         }
-        assertEquals(colourOf("Not run yet - tap to run"), colourOf("Waiting for the recorder..."))
+        assertEquals(colourOf("For callers Do Not Disturb would silence."), colourOf("Waiting for the recorder..."))
     }
 
     /** Back from the answering machine with a take recording: the screen,
@@ -683,19 +697,22 @@ class BehaviourTest : ScreenTest() {
         val state = Fixtures.ready().copy(screen = Screen.ANSWERING_MACHINE)
         val vm = viewModel(state, AnswerUi(enabled = true, greetingSeconds = 6.0, longest = 60))
         show { AppScaffold(state, vm) }
-        compose.onNodeWithText("Longest message").performScrollTo().performClick()
-        compose.onNodeWithText("No limit").performClick()
-        // A warning, not the setting: Cancel leaves it as it was.
+        fun inEditor() { compose.onNodeWithText("New profile", useUnmergedTree = true).performClick() }
+        inEditor()
+        compose.onNodeWithText("No limit").performScrollTo().performClick()
+        // A warning, not the setting: Cancel leaves the profile as it was.
         compose.onNodeWithText("No limit?").assertIsDisplayed()
         compose.onNodeWithText("Cancel").performClick()
-        assertEquals(60, vm.answer.state.value.longest)
-        compose.onNodeWithText("1 minute, then it hangs up").assertIsDisplayed()
+        compose.onNodeWithText("Save").performClick()
+        compose.onNodeWithText("Duration: 1 minute").performScrollTo().assertIsDisplayed()
         // Asked again, and said yes to.
-        compose.onNodeWithText("Longest message").performClick()
-        compose.onNodeWithText("No limit").performClick()
-        compose.onNodeWithText("No limit").performClick()
-        assertEquals(com.adiraimaji.amcallassistant.answering.AnsweringMachine.NO_LIMIT, vm.answer.state.value.longest)
-        compose.onNodeWithText("No limit - it hangs up after 30 seconds of silence").assertIsDisplayed()
+        inEditor()
+        compose.onNodeWithText("No limit").performScrollTo().performClick()
+        compose.onNode(
+            hasText("No limit") and SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button),
+        ).performClick()
+        compose.onNodeWithText("Save").performClick()
+        compose.onNodeWithText("Duration: No limit").performScrollTo().assertIsDisplayed()
     }
 
     @Test fun answeringAgainAfterAnEmergencyCallIsAskedAboutFirst() {

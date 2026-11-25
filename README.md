@@ -1,6 +1,6 @@
-# AM Call Assistant
+﻿# AM Call Assistant
 
-**Version 1.0 — initial release**
+**Version 1.1 — current release**
 
 AM Call Assistant records phone calls and messenger calls on an unrooted Android
 phone, and can answer the call ringing right now with a spoken greeting. It needs
@@ -23,9 +23,23 @@ Yevhen Yemchynskyi. See [Differences from JemRec](#differences-from-jemrec) and
   off. A Calls tab says what was recorded and, when it was not, why.
 - Offers three looks — Memo, Deck and Multitrack — each in light, dark or the
   phone's theme.
-- Has an answering machine (off until enabled) that plays a recorded or typed
-  greeting with the microphone muted, and keeps the caller's message.
-- Has two **Tasker / Locale** actions under **Plugin → AM Call Assistant**.
+- Has an answering machine (off until enabled) that plays a greeting you record,
+  type, or pick from an audio file in storage, with the microphone muted, and
+  keeps the caller's message. It opens on its profiles: a radio button picks
+  the default one, whose greeting, ring delay, Do Not Disturb choice and call
+  duration are used. Each profile can be edited or deleted; the master switch,
+  test call and carrier check stay on the list.
+- Has a **Calling Machine**: profiles that place calls at a chosen date and
+  time, play that profile's greeting when the other end answers, and stay in
+  the call for its duration. A call can be set for a number of minutes or
+  seconds from now, or for a specific date and time. The screen opens on the
+  saved profiles: tap one to edit it, or use its switch to turn it on or off;
+  **New profile** opens an empty one. **Tasker trigger** is a profile the app
+  never starts on its own: only the plugin action places that call. Calls it
+  places are tagged in the
+  recordings list. Android's exact-alarm allowance is requested when a profile
+  is saved.
+- Has three **Tasker / Locale** actions under **Plugin → AM Call Assistant**.
 - **Updates happen in the app.** Every opening checks GitHub for a newer release.
   When there is one, its release notes are shown with **Install** and **Cancel**;
   Install downloads `AM-Call-Assistant.apk` and passes it to Android's installer.
@@ -55,14 +69,18 @@ design. Where it differs from the upstream project:
   greeting is replaced with its value before it is spoken, using Tasker's
   documented `VARIABLE_REPLACE_KEYS` protocol. Variable names are never spoken
   literally.
-- **Longest message.** A free-text field in seconds: empty follows *App's
+- **Call duration.** A free-text field in seconds: empty follows *App's
   Setting*, `0` means no limit, `300` means five minutes. A variable such as
   `%LONGEST` works there; an unresolved one means no limit.
 - **Answering action.** Firing *AM Answering Machine* answers the call ringing
   at that moment, once, with the action's own settings, then puts the app's
   answering settings back. A run with no call leaves them untouched.
-- **Greeting editor.** Typed greetings have a **Play** preview, and the voice
-  list scrolls so every installed voice can be reached.
+- **Greeting editor.** Typed greetings have a **Play** preview; voice lists in
+  the app and the Tasker action are searchable and a tap selects a voice. A
+  greeting can also be an audio file from storage (MP3, M4A, WAV and other
+  formats Android reads), chosen in the app or by path in the Tasker action.
+- **Calling Machine.** Scheduled outgoing calls with profiles, a Tasker action,
+  and a recording tag; JemRec has no outgoing-call feature.
 - **Updates.** A built-in updater installs the newest release from GitHub;
   JemRec's setting opened the releases page in a browser.
 - **Release files.** The release APK is `AM-Call-Assistant.apk` and the debug
@@ -99,15 +117,28 @@ Under **Plugin → AM Call Assistant**:
 - **Toggle AM Call Assistant** turns recording on or off when the action runs.
   Its *Revert* option puts back the setting that was there before the first
   plugin action.
+- **AM Calling Machine** places a call with the number, duration and greeting
+  given in the action, or uses a saved profile chosen in the dropdown. A
+  profile's minutes or seconds start when the action runs; **Tasker trigger**
+  calls at once. A profile with a picked date and time cannot be saved here —
+  choose **Custom** instead. Changing any field switches the dropdown back to
+  Custom, leaving the saved profile alone.
 - **AM Answering Machine** answers the ringing call immediately, just once.
-  Choose the delay under Do Not Disturb, the longest message, and a greeting
-  with a voice; *Play* speaks it before you save. Fields left at **App's
-  Setting** follow whatever you chose in the app at the time the action fires.
-  This action does not change the app's own answering settings.
+  Choose the delay under Do Not Disturb, the call duration, and a greeting:
+  written text with a voice, or a path to an audio file (Tasker variables work
+  in the path). Both may be filled; the **Text** or **File** capsule you select
+  says which one this action uses. A **Record** capsule is shown for a selected
+  profile that already has a recorded greeting. The single **Play greeting**
+  button at the top right of the Greeting section plays whatever type is
+  selected; no recording can be made here. Fields left at **App's Setting** follow whatever you chose
+  in the app at the time the action fires.
+  It can also use a saved answering profile from the dropdown; **Custom** keeps
+  the fields typed here, and changing any field switches back to Custom. This
+  action does not change the app's own answering settings.
 
-In both actions, Tasker variables are written the way Tasker writes them —
-`%BATT`, `%LOC`, `%name` — and are substituted before the action runs. An
-unresolvable longest-message variable means no limit.
+In the answering and calling actions, Tasker variables are written the way
+Tasker writes them — `%BATT`, `%LOC`, `%name` — and are substituted before the
+action runs. An unresolvable call-duration variable means no limit.
 
 ## Build from source
 

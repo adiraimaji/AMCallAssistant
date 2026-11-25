@@ -7,12 +7,22 @@ AM Call Assistant is a fork of **JemRec**, created by Yevhen Yemchynskyi
 Version 2.0. The original copyright notice is retained in [LICENSE](LICENSE) as
 Apache 2.0 section 4 requires. Most of the code, design and documentation here
 comes from that project; the changes made for this fork are described in
-[README.md](README.md#changes-in-this-fork).
+[README.md](README.md) and itemised in [CHANGES.md](CHANGES.md).
 
   Copyright 2026 Yevhen Yemchynskyi - JemRec
   Copyright 2026 Adiraimaji - AM Call Assistant fork
 
 AM Call Assistant itself is licensed under the Apache License, Version 2.0.
+
+## Changes made by this fork
+
+This is a modified version of JemRec. Apache 2.0 section 4(b) requires modified
+files to carry notices stating that they were changed; the Markdown files
+changed here say so at the top and point to the complete, grouped record in
+[CHANGES.md](CHANGES.md). That record covers the changes made when the fork was
+created and the later additions: answering-machine profiles, the Calling
+Machine, three Tasker actions with saved-profile dropdowns, audio-file
+greetings, searchable voice lists and the millisecond greeting delay.
 
 ## Logo
 

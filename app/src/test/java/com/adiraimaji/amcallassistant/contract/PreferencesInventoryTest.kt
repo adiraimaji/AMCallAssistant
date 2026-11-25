@@ -149,12 +149,14 @@ class PreferencesInventoryTest {
          *  preference keys, plus the few key-named constants that are file
          *  and extra names, which a rename breaks just the same. */
         val KEYS = listOf(
-            "adb_private_key.der", "adb_refused_in_a_row", "after_call_notice", "answer_cleared_by_update", "answer_default_sim",
-            "answer_delay_s", "answer_dnd_short", "answer_longest_s", "answer_mixer_", "answer_on", "answer_result_",
+            "adb_private_key.der", "adb_refused_in_a_row", "after_call_notice", "answer_cleared_by_update", "answer_default_profile", "answer_default_sim",
+            "answer_delay_s", "answer_dnd_short", "answer_longest_s", "answer_mixer_", "answer_on", "answer_profiles", "answer_profiles_migrated", "answer_result_",
             "answer_route", "answer_routes_by_path", "answer_sim", "answer_sim_count", "answer_stage_one", "answer_test",
             "answer_volte_cleared", "auto_delete_after_days",
             "auto_delete_last_run", "auto_delete_shorter_than", "background_kill_warned_ms", "battery_restricted_dismissed_words", "battery_restricted_told", "both_ears", "cable_stopped_adbd",
-            "call_ledger", "call_parts", "call_tracking", "caller_banner_dismissed", "calls_covered_since", "coverage_history",
+            "call_ledger", "call_parts", "call_tracking", "caller_banner_dismissed",
+            "calling_pending", "calling_profiles", "calling_recordings",
+            "calls_covered_since", "coverage_history",
             "daemon_token", "debug_notification_snoozed", "debug_off_pending", "debug_switched_off",
             "emergency_call_at", "emergency_resumed_at", "file_names", "folder_lost_told", "heartbeat_port", "heartbeat_version", "hide_debug_notification",
             "keep_paired_asked", "keep_paired_refused", "keep_paired_wish", "kept_recordings", "light_dark", "link_token", "look", "lost_messages", "message_recordings", "missed_seen_until",

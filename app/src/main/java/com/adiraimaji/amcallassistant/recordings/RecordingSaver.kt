@@ -19,6 +19,7 @@ import com.adiraimaji.amcallassistant.calls.CallTracking
 import com.adiraimaji.amcallassistant.calls.CoverageHistory
 import com.adiraimaji.amcallassistant.calls.VoipApps
 import com.adiraimaji.amcallassistant.calls.VoipCallNotes
+import com.adiraimaji.amcallassistant.calling.CallingMark
 import com.adiraimaji.amcallassistant.capture.CaptureDaemon
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -447,6 +448,8 @@ object RecordingSaver {
                 // end says so is marked as it is published (review round 14:
                 // a lost recorder's file collected alone was trashed as short).
                 val isPart = SavePlan.isPart(part, file, CallParts.contains(context, recfile))
+                // The next save after a Calling Machine call carries its mark.
+                val calling = CallingMark.take(context)
                 val written = write(
                     context, recfile, cut.parts, phoneCall = true, message = message, clock = clock,
                     orWhole = cut.orWhole, offBy = offBy, part = isPart, skips = skips,
@@ -458,7 +461,7 @@ object RecordingSaver {
                 ) { p ->
                     RecordingTags.Facts(
                         message = message, incoming = p.incoming, startedAt = p.startMillis, part = isPart,
-                        callAt = p.callAt.takeIf { it >= 0 },
+                        callAt = p.callAt.takeIf { it >= 0 }, calling = calling,
                     )
                 }
                 // Used up at every end of its file but one left to try again

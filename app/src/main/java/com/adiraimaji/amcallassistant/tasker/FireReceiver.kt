@@ -6,8 +6,13 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import com.adiraimaji.amcallassistant.answering.AnswerGreetings
+import com.adiraimaji.amcallassistant.answering.AnswerProfiles
 import com.adiraimaji.amcallassistant.answering.AnsweringMachine
 import com.adiraimaji.amcallassistant.answering.Greeting
+import com.adiraimaji.amcallassistant.calling.CallingGreetings
+import com.adiraimaji.amcallassistant.calling.CallingProfiles
+import com.adiraimaji.amcallassistant.calling.CallingMark
 import com.adiraimaji.amcallassistant.capture.CaptureDaemon
 import com.adiraimaji.amcallassistant.recorder.RecorderSwitch
 import kotlinx.coroutines.CoroutineScope
@@ -32,6 +37,26 @@ class FireReceiver : BroadcastReceiver() {
 
         /** If the call never reports an end, clear the override anyway. */
         private const val TIMEOUT_MS = 5 * 60_000L
+
+        /** The greeting the capsule in the edit screen chose. Both fields may
+         *  hold a value; the chosen one wins. An old action has no choice
+         *  saved, so it keeps its old order: audio file before written text.
+         *  If the chosen field is blank after Tasker's substitution, the other
+         *  one is still used rather than leaving the call without a greeting. */
+        private suspend fun greetingPcm(
+            context: Context,
+            config: PluginContract.Config,
+            text: String,
+            audio: String,
+        ): ByteArray? {
+            val textFirst = config.greetingKind == PluginContract.GREETING_TEXT
+            return when {
+                textFirst && text.isNotBlank() -> GreetingMaker.make(context, text, config.voiceId)
+                !textFirst && audio.isNotBlank() -> GreetingMaker.fromAudio(context, audio)
+                text.isNotBlank() -> GreetingMaker.make(context, text, config.voiceId)
+                else -> GreetingMaker.fromAudio(context, audio)
+            }
+        }
 
         /** Clear the override and restore the daemon from the app's real
          *  settings. Called when the one-shot call ends (or the guard fires). */
@@ -100,6 +125,7 @@ class FireReceiver : BroadcastReceiver() {
                 when (config.kind) {
                     PluginContract.KIND_MAIN -> main(app, config)
                     PluginContract.KIND_ANSWER -> answerNow(app, config, intent)
+                    PluginContract.KIND_CALL -> callNow(app, config, intent)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "tasker: the action failed", e)
@@ -108,6 +134,79 @@ class FireReceiver : BroadcastReceiver() {
                 pending.finish()
             }
         }
+    }
+
+    /** Calling Machine: place a call now, with this action's greeting and
+     *  duration. Nothing in the app's own calling settings changes. */
+    private suspend fun callNow(context: Context, config: PluginContract.Config, intent: Intent) {
+        var effective = config
+        var profilePcm: ByteArray? = null
+        var delayMs = 0L
+        val id = config.callProfileId
+        if (id.isNotBlank() && id != PluginContract.PROFILE_CUSTOM) {
+            val profile = CallingProfiles.get(context, id)
+            if (profile == null) {
+                Log.w(TAG, "tasker: calling machine profile $id no longer exists")
+                return
+            }
+            if (profile.whenMode == "date") {
+                // An absolute time means nothing when an action runs later.
+                Log.w(TAG, "tasker: a picked date and time is not supported by the action")
+                return
+            }
+            delayMs = when (profile.whenMode) {
+                "minutes" -> (profile.delayAmount.toLongOrNull() ?: 0L) * 60_000L
+                "seconds" -> (profile.delayAmount.toLongOrNull() ?: 0L) * 1_000L
+                else -> 0L // "tasker" - place the call as the action fires
+            }.coerceAtLeast(0L)
+            profilePcm = CallingGreetings.pcm(context, profile.id)
+            // Use the profile's values as they are now, not a copy made when
+            // the action was edited: changing a field in the editor would have
+            // switched the dropdown back to Custom anyway.
+            effective = config.copy(
+                callNumber = profile.number,
+                callDuration = profile.duration,
+                callDelayMs = profile.greetingDelayMs,
+                greetingText = profile.text,
+                audioPath = profile.audioPath,
+                voiceId = profile.voiceId,
+            )
+        }
+        // Relative times start when the action runs, not when it was saved.
+        if (delayMs > 0L) delay(delayMs)
+        val variables = readVariables(intent)
+        val number = PluginContract.substitute(effective.callNumber, variables)
+        if (number.isBlank()) {
+            Log.w(TAG, "tasker: calling machine had no number")
+            return
+        }
+        val text = PluginContract.substitute(effective.greetingText, variables)
+        val audio = PluginContract.substitute(effective.audioPath, variables)
+        CallingGreetings.begin()
+        // A Tasker action cannot make a recording; only a chosen profile's
+        // existing one is used.
+        val recordedPcm = if (effective.greetingKind == PluginContract.GREETING_RECORD) profilePcm else null
+        val pcm = recordedPcm ?: greetingPcm(context, effective, text, audio)
+            ?: Greeting.file(context).takeIf { it.isFile && it.length() > 0 }?.readBytes()
+        if (pcm == null || pcm.isEmpty()) {
+            CallingGreetings.end()
+            Log.w(TAG, "tasker: calling machine had no greeting for $number")
+            return
+        }
+        CaptureDaemon.uploadGreeting(context, pcm)
+        val seconds = when (effective.callDuration) {
+            "none" -> 0
+            "message" -> pcm.size.toLong().div(2 * Greeting.RATE).toInt().coerceAtLeast(1)
+            else -> effective.callDuration.toIntOrNull() ?: 60
+        }
+        CallingMark.mark(context)
+        val state = runCatching {
+            CaptureDaemon.callNow(context, number, seconds, effective.callDelayMs)
+        }.getOrNull()
+        Log.i(TAG, "tasker: call now -> $number, $state, ${seconds}s")
+        // Put the app's answering greeting back on the recorder afterwards,
+        // unless a newer call has armed a greeting of its own by then.
+        CallingGreetings.scheduleRestore(context, seconds)
     }
 
     private suspend fun main(context: Context, config: PluginContract.Config) {
@@ -125,24 +224,50 @@ class FireReceiver : BroadcastReceiver() {
         // A second fire supersedes the first: clear any earlier one-shot.
         OneShot.clear()
 
+        var effective = config
+        var profilePcm: ByteArray? = null
+        val id = config.answerProfileId
+        if (id.isNotBlank() && id != PluginContract.PROFILE_CUSTOM) {
+            val profile = AnswerProfiles.get(context, id)
+            if (profile == null) {
+                Log.w(TAG, "tasker: answering machine profile $id no longer exists")
+                return
+            }
+            profilePcm = AnswerGreetings.pcm(context, profile.id)
+            effective = config.copy(
+                delay = profile.delay.toString(),
+                dnd = if (profile.dndShort) PluginContract.Dnd.SHORT.wire else PluginContract.Dnd.SAME.wire,
+                longest = profile.longest.toString(),
+                greetingText = profile.text,
+                audioPath = profile.audioPath,
+                voiceId = profile.voiceId,
+            )
+        }
+
         // Tasker normally substitutes variables in the stored bundle before
-        // firing, so config.greetingText is already "Battery 49" here. The
+        // firing, so the greeting text is already "Battery 49" here. The
         // variables bundle is only a fallback for hosts that pass values
         // separately; read it too so neither path can leave a %name behind.
         val variables = readVariables(intent)
-        val text = PluginContract.substitute(config.greetingText, variables)
-        if (config.greetingText.contains('%') || variables.isNotEmpty()) {
-            Log.i(TAG, "tasker: greeting '${config.greetingText}' -> '$text'")
-        }
+        val text = PluginContract.substitute(effective.greetingText, variables)
+        val audio = PluginContract.substitute(effective.audioPath, variables)
 
-        // A typed greeting is uploaded to the daemon for this call only; the
-        // app's own greeting file is left alone.
-        val pcm = if (text.isNotBlank()) GreetingMaker.make(context, text, config.voiceId) else null
+        // The capsule chosen in the edit screen says which greeting this
+        // action uses, even when the other field also holds a value. It is
+        // uploaded for this call only; the app's own greeting is left alone.
+        // A Tasker action cannot make a recording; only a chosen profile's
+        // existing one is used.
+        val recordedPcm = if (effective.greetingKind == PluginContract.GREETING_RECORD) profilePcm else null
+        val pcm = recordedPcm ?: greetingPcm(context, effective, text, audio)
         if (pcm != null) runCatching { CaptureDaemon.uploadGreeting(context, pcm) }
 
-        val delay = PluginContract.resolveDelay(config.delay, AnsweringMachine.realDelay(context))
-        val dnd = PluginContract.resolveDnd(config.dnd, AnsweringMachine.realDndShort(context))
-        val longest = PluginContract.resolveLongest(config.longest, AnsweringMachine.realLongest(context))
+        // A profile may hold any positive number; the old sentinel and a
+        // Tasker variable still follow the app's current setting.
+        val delay = effective.delay.toIntOrNull()?.takeIf { it > 0 }
+            ?: PluginContract.resolveDelay(effective.delay, AnsweringMachine.realDelay(context))
+        val dnd = PluginContract.resolveDnd(effective.dnd, AnsweringMachine.realDndShort(context))
+        val longest = effective.longest.toIntOrNull()?.takeIf { it >= 0 }
+            ?: PluginContract.resolveLongest(effective.longest, AnsweringMachine.realLongest(context))
 
         OneShot.start(
             OneShot.Values(

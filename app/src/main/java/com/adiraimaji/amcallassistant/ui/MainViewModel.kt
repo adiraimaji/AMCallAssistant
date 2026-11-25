@@ -38,15 +38,26 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+
+/** Which pane of the Calling Machine screen to open. A null id is a new,
+ *  empty profile; an id loads that saved one. One-shot, so a turn of the phone
+ *  keeps the draft rather than loading it again. */
+data class CallingEditRequest(val id: String?)
+
+/** Which Answering Machine profile the editor should load. A null id opens
+ *  an empty one. One-shot, so a turn of the phone keeps the draft. */
+data class AnswerEditRequest(val id: String?)
 
 /**
  * The app's one view model, for every screen: the state they draw (UiState),
@@ -244,6 +255,94 @@ class MainViewModel @JvmOverloads constructor(
 
     /** One step back: a screen reached from Settings returns to it. */
     fun back() = _state.update { it.copy(screen = it.screen.up) }
+
+    // Calling Machine's two panes. The screen owns the draft and the save
+    // logic; the view model only carries the navigation so the app bar's Back
+    // and Save, the list's cards and the floating button all reach it. These
+    // are UI facts, held here so they survive a turn of the phone like the
+    // rest of the screen's place.
+    private val _callingEditorOpen = MutableStateFlow(false)
+    val callingEditorOpen: StateFlow<Boolean> = _callingEditorOpen.asStateFlow()
+
+    private val _callingEditRequests = MutableSharedFlow<CallingEditRequest>(extraBufferCapacity = 1)
+    val callingEditRequests: SharedFlow<CallingEditRequest> = _callingEditRequests.asSharedFlow()
+
+    private val _callingSaveRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val callingSaveRequests: SharedFlow<Unit> = _callingSaveRequests.asSharedFlow()
+
+    fun editCallingProfile(id: String) {
+        _callingEditRequests.tryEmit(CallingEditRequest(id))
+        _callingEditorOpen.value = true
+    }
+
+    fun newCallingProfile() {
+        _callingEditRequests.tryEmit(CallingEditRequest(null))
+        _callingEditorOpen.value = true
+    }
+
+    fun showCallingProfiles() {
+        _callingEditorOpen.value = false
+    }
+
+    /** Back from the editor goes to the list; Back from the list leaves the
+     *  screen for Settings, as it always did. */
+    fun callingBack() {
+        if (_callingEditorOpen.value) showCallingProfiles() else back()
+    }
+
+    /** The app bar's Save runs the screen's own save function. */
+    fun requestCallingSave() {
+        _callingSaveRequests.tryEmit(Unit)
+    }
+
+    /** Gray out Save while the profile's greeting has not been accepted. */
+    private val _callingSaveEnabled = MutableStateFlow(true)
+    val callingSaveEnabled: StateFlow<Boolean> = _callingSaveEnabled.asStateFlow()
+
+    fun setCallingSaveEnabled(enabled: Boolean) {
+        _callingSaveEnabled.value = enabled
+    }
+
+    // Answering Machine's two panes, as above: the list of profiles, with one
+    // chosen as the default, and the editor for one profile.
+    private val _answerEditorOpen = MutableStateFlow(false)
+    val answerEditorOpen: StateFlow<Boolean> = _answerEditorOpen.asStateFlow()
+
+    private val _answerEditRequests = MutableSharedFlow<AnswerEditRequest>(extraBufferCapacity = 1)
+    val answerEditRequests: SharedFlow<AnswerEditRequest> = _answerEditRequests.asSharedFlow()
+
+    private val _answerSaveRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val answerSaveRequests: SharedFlow<Unit> = _answerSaveRequests.asSharedFlow()
+
+    fun editAnswerProfile(id: String) {
+        _answerEditRequests.tryEmit(AnswerEditRequest(id))
+        _answerEditorOpen.value = true
+    }
+
+    fun newAnswerProfile() {
+        _answerEditRequests.tryEmit(AnswerEditRequest(null))
+        _answerEditorOpen.value = true
+    }
+
+    fun showAnswerProfiles() {
+        _answerEditorOpen.value = false
+    }
+
+    fun answerBack() {
+        if (_answerEditorOpen.value) showAnswerProfiles() else back()
+    }
+
+    fun requestAnswerSave() {
+        _answerSaveRequests.tryEmit(Unit)
+    }
+
+    /** Gray out Save while the profile's greeting has not been accepted. */
+    private val _answerSaveEnabled = MutableStateFlow(true)
+    val answerSaveEnabled: StateFlow<Boolean> = _answerSaveEnabled.asStateFlow()
+
+    fun setAnswerSaveEnabled(enabled: Boolean) {
+        _answerSaveEnabled.value = enabled
+    }
 
     /** Switch tabs. Leaving Recordings ends a selection, which only means
      *  something there; arriving at Calls reads the call log. */

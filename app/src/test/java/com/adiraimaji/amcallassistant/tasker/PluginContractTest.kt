@@ -116,6 +116,62 @@ class PluginContractTest {
         assertEquals("Battery 87", PluginContract.substitute("Battery %BATT", mapOf("%BATT" to "87")))
     }
 
+    @Test fun anAudioFilePathRoundTripsWithItsVariables() {
+        val config = PluginContract.Config(
+            kind = PluginContract.KIND_ANSWER,
+            audioPath = "/sdcard/%FOLDER%/greeting.mp3",
+        )
+        val wire = config.serialise()
+        assertTrue("Tasker must see the variable in the path: $wire", "%FOLDER%" in wire)
+        assertEquals(config, PluginContract.Config.parse(wire))
+        assertTrue(config.blurb().contains("audio file"))
+    }
+
+    @Test fun theChosenGreetingSurvivesWithBothFieldsFilled() {
+        val config = PluginContract.Config(
+            kind = PluginContract.KIND_ANSWER,
+            greetingText = "Hello",
+            audioPath = "/sdcard/greeting.mp3",
+            greetingKind = PluginContract.GREETING_FILE,
+        )
+        val parsed = PluginContract.Config.parse(config.serialise())!!
+        assertEquals(config, parsed)
+        assertEquals(PluginContract.GREETING_FILE, parsed.greetingKind)
+        assertTrue(parsed.blurb().contains("audio file"))
+    }
+
+    @Test fun theChosenProfilesRoundTripWithTheTypedValues() {
+        val config = PluginContract.Config(
+            kind = PluginContract.KIND_CALL,
+            callNumber = "123",
+            answerProfileId = "answer-id",
+            callProfileId = "call-id",
+            customGreetingId = "custom-id",
+        )
+        val parsed = PluginContract.Config.parse(config.serialise())!!
+        assertEquals(config, parsed)
+        assertEquals("answer-id", parsed.answerProfileId)
+        assertEquals("call-id", parsed.callProfileId)
+        assertEquals("custom-id", parsed.customGreetingId)
+    }
+
+    @Test fun anOldConfigHasNoChosenGreeting() {
+        val wire = PluginContract.Config(kind = PluginContract.KIND_ANSWER, greetingText = "Hi")
+            .serialise().split("|").dropLast(3).joinToString("|").replaceFirst("8|", "6|")
+        val parsed = PluginContract.Config.parse(wire)!!
+        assertEquals("", parsed.greetingKind)
+        assertEquals("", parsed.answerProfileId)
+        assertEquals("", parsed.callProfileId)
+        assertEquals("Hi", parsed.greetingText)
+    }
+
+    @Test fun anOldTextOnlyConfigHasNoAudioFile() {
+        val old = "2|answer|0|1|1|default|default|default|Hello|ZGVmYXVsdA=="
+        val parsed = PluginContract.Config.parse(old)!!
+        assertEquals("Hello", parsed.greetingText)
+        assertEquals("", parsed.audioPath)
+    }
+
     @Test fun blurbSaysWhatTheActionDoes() {
         assertEquals(
             "Toggle AM Call Assistant: off",
@@ -144,7 +200,7 @@ class PluginContractTest {
             listOf("default", "short", "same"),
             PluginContract.DND_OPTIONS.map { it.first },
         )
-        // The longest message is no longer a dropdown: it is typed in seconds.
+        // The call duration is no longer a dropdown: it is typed in seconds.
         // The sentinel still reads "App's Setting" in the remaining dropdowns.
         assertEquals("App's Setting", PluginContract.DELAY_OPTIONS.first().second)
         assertEquals("App's Setting", PluginContract.DND_OPTIONS.first().second)

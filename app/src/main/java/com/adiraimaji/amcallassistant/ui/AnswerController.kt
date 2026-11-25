@@ -4,8 +4,11 @@ import android.app.Application
 import android.media.AudioTrack
 import android.util.Log
 import com.adiraimaji.amcallassistant.answering.AnswerConditions
+import com.adiraimaji.amcallassistant.answering.AnswerGreetings
+import com.adiraimaji.amcallassistant.answering.AnswerProfiles
 import com.adiraimaji.amcallassistant.answering.AnswerDiagnostics
 import com.adiraimaji.amcallassistant.answering.AnsweringMachine
+import com.adiraimaji.amcallassistant.answering.AudioGreeting
 import com.adiraimaji.amcallassistant.answering.EmergencyPause
 import com.adiraimaji.amcallassistant.answering.Greeting
 import com.adiraimaji.amcallassistant.answering.GreetingSpeaker
@@ -187,7 +190,8 @@ class AnswerController(
                 longest = AnsweringMachine.longest(app),
                 sim = AnsweringMachine.sim(app),
                 defaultSim = AnswerConditions.defaultSim(app),
-                greetingSeconds = if (Greeting.present(app)) Greeting.seconds(app) else null,
+                greetingSeconds = AnswerProfiles.default(app)?.let { AnswerGreetings.seconds(app, it.id) }
+                    ?: if (Greeting.present(app)) Greeting.seconds(app) else null,
                 callTracking = CallTracking.enabled(app),
                 pausedUntil = EmergencyPause.pausedUntil(app),
                 stageOne = AnswerDiagnostics.stageOne(app),
@@ -195,6 +199,13 @@ class AnswerController(
                 cleared = AnswerDiagnostics.cleared(app),
             )
         }
+    }
+
+    /** A profile was saved, deleted or chosen as the default: read its values
+     *  back and send the new settings and greeting to the recorder. */
+    fun profileChanged() {
+        reload()
+        push(asked = false)
     }
 
     /** [ui] with the results as stored now, and why an update cleared any:
@@ -282,6 +293,9 @@ class AnswerController(
      *  checks run on opening, a take whose upload was told already). */
     private fun push(asked: Boolean = true, on: CoroutineScope = scope) {
         on.launch {
+            // A different default profile may have a different greeting: put
+            // it on the recorder before the settings that use it.
+            CaptureDaemon.syncGreeting(app)
             if (!CaptureDaemon.setAnswering(app)) {
                 val words = "the recorder will pick up the answering machine when it next restarts"
                 if (asked) told(words) else say(words)
@@ -312,17 +326,32 @@ class AnswerController(
     }
 
     fun setDelay(seconds: Int) {
-        AnsweringMachine.setDelay(app, seconds)
+        val profile = AnswerProfiles.default(app)
+        if (profile != null) {
+            AnswerProfiles.save(app, profile.copy(delay = seconds))
+        } else {
+            AnsweringMachine.setDelay(app, seconds)
+        }
         _state.update { it.copy(delay = seconds) }
     }
 
     fun setDndShort(short: Boolean) {
-        AnsweringMachine.setDndShort(app, short)
+        val profile = AnswerProfiles.default(app)
+        if (profile != null) {
+            AnswerProfiles.save(app, profile.copy(dndShort = short))
+        } else {
+            AnsweringMachine.setDndShort(app, short)
+        }
         _state.update { it.copy(dndShort = short) }
     }
 
     fun setLongest(seconds: Int) {
-        AnsweringMachine.setLongest(app, seconds)
+        val profile = AnswerProfiles.default(app)
+        if (profile != null) {
+            AnswerProfiles.save(app, profile.copy(longest = seconds))
+        } else {
+            AnsweringMachine.setLongest(app, seconds)
+        }
         _state.update { it.copy(longest = seconds) }
         push()
     }
@@ -675,6 +704,58 @@ class AnswerController(
             } catch (e: Exception) {
                 Log.w(TAG, "answer: the written greeting failed", e)
                 _state.update { it.copy(ttsError = "Text to speech could not make a greeting. Try another voice.") }
+            } finally {
+                _state.update { it.copy(ttsBusy = false) }
+                done(made)
+            }
+        }
+    }
+
+    /**
+     * Make an audio file the greeting, by the same path a recorded take takes:
+     * decoded to the recorder's PCM, kept as the master copy and uploaded.
+     */
+    fun useAudioGreeting(path: String, done: (Boolean) -> Unit) {
+        if (_state.value.ttsBusy || path.isBlank()) return
+        if (take?.isActive == true || _state.value.processingTake || _state.value.takeListening ||
+            Greeting.takeListening || Greeting.making.value != null
+        ) {
+            _state.update { it.copy(ttsError = "Stop the recorded greeting first") }
+            return
+        }
+        ttsJob?.cancel()
+        _state.update { it.copy(ttsBusy = true, ttsError = null) }
+        ttsJob = outliving.launch {
+            var made = false
+            try {
+                val pcm = AudioGreeting.pcm(app, AudioGreeting.uri(path))
+                if (pcm == null) {
+                    _state.update { it.copy(ttsError = "That file could not be played. Try an MP3, M4A or WAV.") }
+                    return@launch
+                }
+                val saved = withContext(Dispatchers.IO) { runCatching { Greeting.save(app, pcm) } }
+                if (saved.isFailure) {
+                    Log.w(TAG, "answer: the audio greeting could not be saved", saved.exceptionOrNull())
+                    _state.update { it.copy(ttsError = "The greeting could not be saved. Is the phone's storage full?") }
+                    return@launch
+                }
+                stopPreview()
+                val sent = CaptureDaemon.uploadGreeting(app, pcm)
+                _state.update {
+                    it.copy(
+                        greetingSeconds = pcm.size / 2.0 / Greeting.RATE,
+                        greetingProblem = null,
+                        ttsError = null,
+                    )
+                }
+                if (!sent) tell("the recorder will get the new greeting when it next restarts")
+                push(asked = sent, on = outliving)
+                made = true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "answer: the audio greeting failed", e)
+                _state.update { it.copy(ttsError = "That file could not be played. Try an MP3, M4A or WAV.") }
             } finally {
                 _state.update { it.copy(ttsBusy = false) }
                 done(made)

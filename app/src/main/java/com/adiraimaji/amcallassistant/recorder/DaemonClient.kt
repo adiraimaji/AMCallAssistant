@@ -5,11 +5,13 @@ import android.content.Context
 import android.util.Log
 import androidx.core.content.edit
 import com.adiraimaji.amcallassistant.Prefs
+import com.adiraimaji.amcallassistant.answering.AnswerGreetings
 import com.adiraimaji.amcallassistant.answering.AnsweringMachine
 import com.adiraimaji.amcallassistant.answering.Greeting
 import com.adiraimaji.amcallassistant.calls.CallTracking
 import com.adiraimaji.amcallassistant.calls.CoverageHistory
 import com.adiraimaji.amcallassistant.calls.VoipApps
+import com.adiraimaji.amcallassistant.calling.CallingGreetings
 import com.adiraimaji.amcallassistant.hex
 import com.adiraimaji.amcallassistant.recordings.QualitySetting
 import kotlinx.coroutines.CancellationException
@@ -102,6 +104,8 @@ object DaemonClient {
     private const val COMMAND_GO_AHEAD = 'Y'.code.toByte()
     /** Tasker's answer-now: accept the ring in progress immediately. */
     private const val COMMAND_ANSWER_NOW = 'M'.code.toByte()
+    /** Calling Machine: place an outgoing call and play the greeting on it. */
+    private const val COMMAND_CALL_NOW = 'U'.code.toByte()
     private const val COMMAND_HANDOVER = 'H'.code.toByte()
     private const val COMMAND_GREETING = 'G'.code.toByte()
     private const val COMMAND_DIAGNOSE = 'X'.code.toByte()
@@ -412,6 +416,17 @@ object DaemonClient {
             readMs = 1_500,
         )
 
+    /** Calling Machine: dial [number] through the shell, wait [delayMs] after
+     *  off-hook before playing the greeting, and stay up for [seconds]
+     *  (0 = no limit). The daemon's reply, or null if it has no machine. */
+    suspend fun callNow(context: Context, number: String, seconds: Int, delayMs: Int): String? =
+        ask(
+            context, COMMAND_CALL_NOW,
+            nameFrame(number) + java.nio.ByteBuffer.allocate(8)
+                .putInt(seconds).putInt(delayMs).array(),
+            readMs = 1_500,
+        )
+
     /** During a message: Talk to them, or Hang up. */
     suspend fun handOver(context: Context, talk: Boolean): Boolean =
         ask(context, COMMAND_HANDOVER, byteArrayOf((if (talk) 'T' else 'H').code.toByte()), readMs = 1_500)
@@ -464,14 +479,29 @@ object DaemonClient {
      * recorder has the app's greeting, or none as the app has none.
      */
     suspend fun syncGreeting(context: Context): Boolean {
+        // A Calling Machine call has put this profile's own greeting on the
+        // recorder. A routine mode push must not swap it for the answering
+        // machine's greeting, or every profile plays the same one.
+        if (CallingGreetings.callingActive) return true
         val there = greetingBytes(context) ?: return false
+        // The default answering profile's greeting, when it has one, is the
+        // one the recorder must play. A profile with no greeting of its own
+        // falls back to the app's recording below.
+        val selected = AnswerGreetings.selected(context)
+        if (selected != null) {
+            return if (there != selected.size.toLong()) {
+                runCatching { uploadGreeting(context, selected) }.getOrDefault(false)
+            } else {
+                true
+            }
+        }
         val here = Greeting.file(context)
         return when {
             // Read where it may be gone: deleted between the look and the
             // read, it threw, and nothing caught it.
             Greeting.present(context) && there != here.length() ->
                 runCatching { here.readBytes() }.getOrNull()?.let { uploadGreeting(context, it) } ?: false
-            !Greeting.present(context) && there > 0 ->
+            !Greeting.present(context) && there > 0 && !CallingGreetings.callingActive ->
                 ask(context, COMMAND_GREETING, byteArrayOf('D'.code.toByte())) != null
             else -> true
         }

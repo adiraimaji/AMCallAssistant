@@ -40,7 +40,7 @@ object AnsweringMachine {
     /** About two rings: Do Not Disturb would silence the call anyway. */
     const val DND_DELAY = 5
 
-    /** The longest message, in seconds; [NO_LIMIT] runs until the caller
+    /** The call duration, in seconds; [NO_LIMIT] runs until the caller
      *  hangs up, or has been silent half a minute (the recorder's
      *  AnswerMachine.SILENCE_HANGUP_MS). */
     const val NO_LIMIT = 0
@@ -65,13 +65,16 @@ object AnsweringMachine {
         Prefs.of(context).edit { putBoolean(KEY_ON, on) }
     }
 
+    /** Any positive number of seconds may be typed in the editor. The list
+     *  above is only the choices the Tasker action offers; it is not a limit
+     *  on the value the app can store. */
     fun realDelay(context: Context): Int =
-        Prefs.of(context).getInt(KEY_DELAY, DEFAULT_DELAY).takeIf { it in DELAYS } ?: DEFAULT_DELAY
+        Prefs.of(context).getInt(KEY_DELAY, DEFAULT_DELAY).takeIf { it > 0 } ?: DEFAULT_DELAY
 
     fun delay(context: Context): Int = com.adiraimaji.amcallassistant.tasker.OneShot.delay(context)
 
     fun setDelay(context: Context, seconds: Int) {
-        require(seconds in DELAYS)
+        require(seconds > 0)
         Prefs.of(context).edit { putInt(KEY_DELAY, seconds) }
     }
 
@@ -85,13 +88,15 @@ object AnsweringMachine {
         Prefs.of(context).edit { putBoolean(KEY_DND_SHORT, short) }
     }
 
+    /** Any number of seconds may be typed in the editor; [NO_LIMIT] is zero.
+     *  [LONGEST] above is the list of presets, not a limit on what is kept. */
     fun realLongest(context: Context): Int =
-        Prefs.of(context).getInt(KEY_LONGEST, DEFAULT_LONGEST).takeIf { it in LONGEST } ?: DEFAULT_LONGEST
+        Prefs.of(context).getInt(KEY_LONGEST, DEFAULT_LONGEST).takeIf { it >= 0 } ?: DEFAULT_LONGEST
 
     fun longest(context: Context): Int = com.adiraimaji.amcallassistant.tasker.OneShot.longest(context)
 
     fun setLongest(context: Context, seconds: Int) {
-        require(seconds in LONGEST)
+        require(seconds >= 0)
         Prefs.of(context).edit { putInt(KEY_LONGEST, seconds) }
     }
 

@@ -58,6 +58,8 @@ data class Recording(
     val kept: Boolean = false,
     /** A message the answering machine took. See RecordingMarks. */
     val message: Boolean = false,
+    /** A call placed by the Calling Machine. See RecordingMarks.Calling. */
+    val calling: Boolean = false,
     /** Set only for a recording in the trash: when it goes for good. */
     val expiresAtMillis: Long? = null,
     /** Set only where a row shows this recording for a call of its own - the

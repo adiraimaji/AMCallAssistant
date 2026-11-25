@@ -183,8 +183,14 @@ final class Wire {
     static final int COMMAND_KEEP_PAIRED = 'J';
 
     /** Tasker "answer now": answer the ring in progress at once, whatever
-     *  the app's own answering switch says. Payload: the longest message. */
+     *  the app's own answering switch says. Payload: the call duration. */
     static final int COMMAND_ANSWER_NOW = 'M';
+
+    /** Calling Machine: place an outgoing call, play the greeting when the far
+     *  end answers, and stay in it for the given seconds (0 = no limit).
+     *  Payload: a name frame with the number, then the call duration in
+     *  seconds and the greeting delay in milliseconds. */
+    static final int COMMAND_CALL_NOW = 'U';
 
     /**
      * THE QUALITY - Settings' choice of how many bits a second a recording is

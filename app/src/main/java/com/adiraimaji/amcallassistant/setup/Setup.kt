@@ -24,6 +24,7 @@ import com.adiraimaji.amcallassistant.rethrowingCancellation
 import com.adiraimaji.amcallassistant.system.AutoStart
 import com.adiraimaji.amcallassistant.system.DeviceSkin
 import com.adiraimaji.amcallassistant.system.GlobalSettings
+import com.adiraimaji.amcallassistant.system.Shell
 import com.adiraimaji.amcallassistant.system.ShellGrant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -49,6 +50,12 @@ enum class SetupStep {
      *  have not been granted yet. First, because without them nothing else is
      *  worth doing: a recorder whose notification cannot show is invisible. */
     NEEDS_PERMISSIONS,
+
+    /** Fresh install: pick the native ADB setup or the optional Shizuku route. */
+    CHOOSE_SETUP_METHOD,
+
+    /** Shizuku was picked but its app/binder/permission is not ready yet. */
+    NEEDS_SHIZUKU,
 
     /**
      * The user has not yet been told what setup leaves switched on, or asked
@@ -149,7 +156,18 @@ object Setup {
     private const val KEY_PAIRED = "setup_paired"
     private const val KEY_DEV_OPTIONS_CONFIRMED = "setup_dev_options_confirmed"
     private const val KEY_BACKGROUND_ASKED = "setup_background_asked"
+    private const val KEY_METHOD = "setup_method"
+    const val METHOD_NATIVE = "native"
+    const val METHOD_SHIZUKU = "shizuku"
     private const val PERMISSION = android.Manifest.permission.WRITE_SECURE_SETTINGS
+
+    /** Empty on a fresh install, until the user picks one. Older installs are
+     *  treated as native by decide(), so they are never asked twice. */
+    fun method(context: Context): String = Prefs.of(context).getString(KEY_METHOD, "") ?: ""
+
+    fun chooseMethod(context: Context, value: String) {
+        Prefs.of(context).edit().putString(KEY_METHOD, value).commit()
+    }
 
     fun hasSecureSettings(context: Context): Boolean =
         context.checkSelfPermission(PERMISSION) == PackageManager.PERMISSION_GRANTED
@@ -228,6 +246,13 @@ object Setup {
     internal fun markComplete(context: Context) {
         Prefs.of(context)
             .edit { putBoolean(KEY_COMPLETE, true) }
+    }
+
+    /** Changing the bootstrap in Settings sends setup through its steps again,
+     *  without Start fresh's forgetting of permissions, pairing or recordings. */
+    internal fun markIncomplete(context: Context) {
+        Prefs.of(context)
+            .edit { putBoolean(KEY_COMPLETE, false) }
     }
 
     /**
@@ -454,6 +479,8 @@ object Setup {
         fun wirelessDebuggingOn(): Boolean
         fun developerOptionsOn(): Boolean
         fun hasPaired(): Boolean
+        fun setupMethod(): String
+        fun shizukuReady(): Boolean
     }
 
     private class LiveProbe(private val context: Context) : Probe {
@@ -479,6 +506,8 @@ object Setup {
         override fun wirelessDebuggingOn() = Setup.wirelessDebuggingOn(context)
         override fun developerOptionsOn() = Setup.developerOptionsOn(context)
         override fun hasPaired() = Setup.hasPaired(context)
+        override fun setupMethod() = Setup.method(context)
+        override fun shizukuReady() = com.adiraimaji.amcallassistant.system.ShizukuShell.ready(context)
     }
 
     /**
@@ -504,6 +533,33 @@ object Setup {
         // as Android's guide asks: "gracefully degrade your app".
         if (world.missingPermissions() && !world.isComplete()) {
             return SetupStep.NEEDS_PERMISSIONS
+        }
+
+        // Fresh installs pick their bootstrap once. Installs set up before
+        // this question existed have no saved method but are already complete,
+        // so they carry on with the native route they used all along.
+        val method = world.setupMethod()
+        if (method.isBlank() && !world.isComplete()) {
+            return SetupStep.CHOOSE_SETUP_METHOD
+        }
+        if (method == METHOD_SHIZUKU) {
+            if (!world.shizukuReady()) return SetupStep.NEEDS_SHIZUKU
+
+            // None of the questions or screens below belong to this route:
+            // they are all about Wireless debugging and ADB pairing. But this
+            // branch still has to end. Answering FINISHING for a ready Shizuku
+            // forever left the "starting the recorder" card spinning after
+            // finish() had already succeeded: state.step became currentStep(),
+            // which came straight back here. Apply the same READY rules the
+            // native route uses further down - switched off, recorder running,
+            // or simply set up and waiting for the keep-alive.
+            if (!world.recorderOn() && world.isComplete()) return SetupStep.READY
+            if (world.daemonRunning()) {
+                world.markComplete()
+                return SetupStep.READY
+            }
+            if (world.isComplete()) return SetupStep.READY
+            return SetupStep.FINISHING
         }
 
         // Before every READY below, so an install from before the question
@@ -566,7 +622,7 @@ object Setup {
             // What CAN answer without a keypair is our own daemon after a
             // Start fresh that failed to stop it: the token outlives the
             // identity. That one is ours to retire, and this is the place.
-            if (world.hasIdentity()) {
+            if (world.hasIdentity() || method == METHOD_SHIZUKU) {
                 // A recorder that is up and answering is the proof the flag
                 // wants, so installs from before it existed get it here rather
                 // than being sent back through a wizard they finished long ago.
@@ -594,7 +650,7 @@ object Setup {
         // user is what makes it not their problem. Bringing the daemon back is
         // the keep-alive job's business, which recheckSetup() has already
         // kicked, and the home screen says whether the recorder is running.
-        if (world.hasIdentity() && world.isComplete()) {
+        if ((world.hasIdentity() || method == METHOD_SHIZUKU) && world.isComplete()) {
             Log.i(TAG, "setup: set up, recorder down - leaving it to the keep-alive")
             return SetupStep.READY
         }
@@ -605,11 +661,13 @@ object Setup {
         // off - that was a four-second dead wait on every return from Settings,
         // during which the screen sat on the old step with its button greyed and
         // then jumped. With it gone, the auto-advance to the next step is instant.
-        if (!world.adbConnected() && world.wirelessDebuggingOn()) {
+        // Shizuku supplies the shell session itself: no pairing code, no mDNS,
+        // no Wireless debugging, no ADB identity are needed on that route.
+        if (method != METHOD_SHIZUKU && !world.adbConnected() && world.wirelessDebuggingOn()) {
             world.connect()
         }
 
-        if (!world.adbConnected()) {
+        if (method != METHOD_SHIZUKU && !world.adbConnected()) {
             // Developer options is the one gate that keeps its own step: enabling
             // it is a distinct ritual (Build number, seven taps) in a different
             // corner of Settings. Everything after it - turning Wireless
@@ -660,21 +718,21 @@ object Setup {
             } else {
                 // Not run at all - the session gone - is said as that, not
                 // blamed on a switch.
-                val ran = AdbTransport.exec(ShellGrant.grantCommand(pkg, PERMISSION)).getOrElse {
+                val ran = Shell.exec(context, ShellGrant.grantCommand(pkg, PERMISSION)).getOrElse {
                     val why = it.message ?: it.javaClass.simpleName
                     error(
                         "AM Call Assistant lost its connection to this phone ($why). Check that Wireless " +
                             "debugging is still on, then tap Try again.",
                     )
                 }
-                ran to AdbTransport.exec(ShellGrant.readBackCommand(pkg, PERMISSION)).getOrNull()
+                ran to Shell.exec(context, ShellGrant.readBackCommand(pkg, PERMISSION)).getOrNull()
             }
             val outcome = ShellGrant.outcome(pkg, PERMISSION, grant, readBack)
             // Two lines: a refusal's stack trace runs to twenty.
             Log.i(TAG, "setup: grant -> $outcome (${grant.lines().take(2).joinToString(" | ")})")
             if (outcome != ShellGrant.Outcome.GRANTED) {
                 val property = if (ShellGrant.actAsRefused) "true"
-                else AdbTransport.exec("getprop ${ShellGrant.MONITORING_PROPERTY}").getOrNull()
+                else Shell.exec(context, "getprop ${ShellGrant.MONITORING_PROPERTY}").getOrNull()
                 Log.i(TAG, "setup: ${ShellGrant.MONITORING_PROPERTY}=[${property?.trim()}]")
                 error(ShellGrant.advice(outcome, DeviceSkin.current(), ShellGrant.monitoring(property)))
             }
@@ -687,8 +745,9 @@ object Setup {
         // phone's own Notification access list never shows AM Call Assistant reading
         // notifications it was told to leave alone.
         val hide = DebugNotificationCleaner.hiding(context)
-        val notif = AdbTransport.exec(
-            DebugNotificationCleaner.accessCommand(context, allow = hide) + " && echo done"
+        val notif = Shell.exec(
+            context,
+            DebugNotificationCleaner.accessCommand(context, allow = hide) + " && echo done",
         ).getOrElse { "failed: ${it.message}" }
         Log.i(TAG, "setup: notif listener (${if (hide) "allow" else "disallow"}) -> $notif")
 
@@ -702,7 +761,7 @@ object Setup {
         // "Re-assert", because the user now turns this on in step 2, before
         // pairing: on this phone the FIRST connect needs it too (see
         // usbDebuggingOn), so it could not wait until here. Idempotent.
-        val shield = RecorderLifecycle.shieldOverAdb()
+        val shield = RecorderLifecycle.shieldOverAdb(context)
         Log.i(TAG, "setup: off-Wi-Fi shield -> $shield")
 
         CaptureDaemon.ensureRunning(context).getOrThrow()
@@ -772,7 +831,7 @@ object Setup {
             object : GrantSession {
                 override val open get() = AdbTransport.isConnected
                 override suspend fun connect() = AdbTransport.autoConnect(context, timeoutMs = 5_000).isSuccess
-                override suspend fun exec(command: String) = AdbTransport.exec(command)
+                override suspend fun exec(command: String) = Shell.exec(context, command)
                 override suspend fun close() {
                     AdbTransport.close()
                 }
@@ -904,6 +963,7 @@ object Setup {
             remove(KEY_PAIRED)
             remove(KEY_DEV_OPTIONS_CONFIRMED)
             remove(KEY_BACKGROUND_ASKED)
+            remove(KEY_METHOD)
         }
 
         if (hasSecureSettings(context) &&

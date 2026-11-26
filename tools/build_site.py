@@ -1586,8 +1586,9 @@ VIEWER = """<div class="viewer" hidden tabindex="-1" role="dialog" aria-modal="t
 
 SETUP_TITLE = "Setting up AM Call Assistant"
 SETUP_LEAD = (
-    "Everything happens on the phone. You will not need a computer, a cable, or "
-    "a second app. It takes about three minutes, and you do it once."
+    "Everything happens on the phone. You will not need a computer or a cable. "
+    "The native route needs no second app; if you already have Shizuku, you can "
+    "use that instead. It takes about three minutes, and you do it once."
 )
 
 SETUP = [
@@ -1596,6 +1597,16 @@ SETUP = [
           "MagicOS 10, and the screen names are the ones that actually appear "
           "there. Other phones differ in wording; the shape of the process does "
           "not, and AM Call Assistant names the right path for your phone as you go."),
+
+    ("p", "A fresh install first asks which **mode** to use. **Native** is the "
+          "default: it pairs with this phone's own Wireless debugging once, and "
+          "the steps below are for that route. **Shizuku** is optional: if "
+          "Shizuku (or a compatible fork such as Shizuku-Next) is installed, "
+          "running and allows AM Call Assistant, setup needs no pairing code "
+          "and no Wireless debugging. Settings → Setup → Mode of operation "
+          "shows the mode in use and can switch it later; switching runs the "
+          "new mode's setup again and keeps your recordings, permissions and "
+          "pairing."),
 
     ("h2", "Installing"),
     ("p", "**The easy way is F-Droid**: install the F-Droid client, search for "

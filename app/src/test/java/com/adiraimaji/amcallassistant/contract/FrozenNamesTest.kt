@@ -155,6 +155,7 @@ class FrozenNamesTest {
             ".tasker.FireReceiver",
             ".tasker.MainEditActivity",
             ".recordings.RecordingsFileProvider",
+            "rikka.shizuku.ShizukuProvider",
         )
 
         val DEBUG_COMPONENTS = setOf(

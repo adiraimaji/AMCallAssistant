@@ -1,7 +1,8 @@
 # Setting up AM Call Assistant
 
-Everything happens on the phone. You will not need a computer, a cable, or a
-second app. It takes about three minutes, and you do it once.
+Everything happens on the phone. You will not need a computer or a cable. The
+native route needs no second app; if you already have Shizuku, you can use that
+instead. It takes about three minutes, and you do it once.
 
 > **Modified from JemRec.** This manual was changed for AM Call Assistant, an
 > Apache-2.0 licensed fork of JemRec; see [CHANGES.md](../CHANGES.md) for the
@@ -19,6 +20,14 @@ Every step below was walked through on an Honor Magic 8 Pro running MagicOS 10,
 and the screen names are the ones that actually appear there. Other phones
 differ in wording; the shape of the process does not, and AM Call Assistant
 names the right path for your phone as you go.
+
+A fresh install first asks which **mode** to use. **Native** is the default: it
+pairs with this phone's own Wireless debugging once, and the steps below are
+for that route. **Shizuku** is optional: if Shizuku (or a compatible fork such
+as Shizuku-Next) is installed, running and allows AM Call Assistant, setup
+needs no pairing code and no Wireless debugging. Settings → Setup → Mode of
+operation shows the mode in use and can switch it later; switching runs the new
+mode's setup again and keeps your recordings, permissions and pairing.
 
 ## Installing
 
@@ -378,16 +387,16 @@ Or tap **Write a greeting**: type the words, pick one of the voices already on
 the phone, and AM Call Assistant speaks them with Android's text-to-speech,
 offline, and plays that to the caller instead. **Use as greeting** replaces the
 recorded one; the row then plays either kind, and **Delete** removes either. A
-phone with no text-to-speech voice simply has no voices to choose from. A greeting
-can also be an audio file from storage; search for a voice by name and tap to
-pick it.
+phone with no text-to-speech voice simply has no voices to choose from. A
+greeting can also be an audio file from storage; search for a voice by name and
+tap to pick it.
 
 **Profiles.** The answering machine opens on a list of profiles. A radio button
-picks the default one, whose greeting, ring delay, Do Not Disturb choice and call
-duration are used; each profile can be edited or deleted, and **New profile**
-opens an empty one. The master switch, test call and carrier check stay on the
-list. An install updating from 1.0 gets one profile, *My greeting*, carrying its
-old settings.
+picks the default one, whose greeting, ring delay, Do Not Disturb choice and
+call duration are used; each profile can be edited or deleted, and **New
+profile** opens an empty one. The master switch, test call and carrier check
+stay on the list. An install updating from 1.0 gets one profile, *My greeting*,
+carrying its old settings.
 
 **When it answers**
 
@@ -398,8 +407,8 @@ old settings.
 - **With Do Not Disturb on** — after two rings, about 5 seconds, for callers Do
   Not Disturb would silence. Callers it lets through ring as usual.
 - **Answer on** — with two SIMs, which one: your default for calls, or both.
-- **Call duration** — how long a caller can speak after the beep: 30 seconds,
-  1 minute or 2 minutes. Then AM Call Assistant hangs up, and the message is
+- **Call duration** — how long a caller can speak after the beep: 30 seconds, 1
+  minute or 2 minutes. Then AM Call Assistant hangs up, and the message is
   saved. Or **No limit**, which asks first: the call then lasts until the
   caller hangs up or has been silent for 30 seconds, and your phone is in it
   until then - a caller somewhere noisy may never count as silent.
@@ -590,14 +599,14 @@ start when the action runs, and a **Tasker trigger** profile calls at once.
 **Answering machine** answers the call that is ringing right now, once, with
 the delay under Do Not Disturb, a call duration typed in seconds (empty means
 **App's Setting**, 0 means no limit, and Tasker variables work), and a greeting
-you type and give a voice to, an audio file, or a saved answering profile chosen
-in the dropdown. **Custom** uses the fields typed in the action; changing any
-field returns the dropdown to Custom. A single **Play greeting** button plays
-the selected greeting; a recorded one can only come from a profile. Every field
-left at **App's Setting** takes
-the value you chose in the app when the action runs, not a copy made when you
-made the action. The action changes nothing in the app: your answering settings
-and your own greeting stay as they are.
+you type and give a voice to, an audio file, or a saved answering profile
+chosen in the dropdown. **Custom** uses the fields typed in the action;
+changing any field returns the dropdown to Custom. A single **Play greeting**
+button plays the selected greeting; a recorded one can only come from a
+profile. Every field left at **App's Setting** takes the value you chose in the
+app when the action runs, not a copy made when you made the action. The action
+changes nothing in the app: your answering settings and your own greeting stay
+as they are.
 
 Tasker variables are filled in when the action runs, written the way you write
 them in Tasker - **%BATT**, **%LOC**, **%name** - and spoken as their value.

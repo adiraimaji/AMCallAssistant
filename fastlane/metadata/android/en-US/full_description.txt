@@ -1,25 +1,27 @@
-A call recorder for unrooted Android — phone and messenger calls. One APK. No root, no Shizuku, no companion app, no computer: the phone sets itself up.
+A call recorder for unrooted Android — phone and messenger calls. One APK. No root, no companion app, no computer: the phone sets itself up with Wireless debugging, or optionally with Shizuku.
 
-<b>How it works.</b> Android's voice-call audio source carries both sides of a call, but only system identities may read it, ADB's shell user among them. AM Call Assistant embeds an ADB client and pairs with the phone's own Wireless debugging over 127.0.0.1. Nothing leaves the phone.
+<b>How it works.</b> Android's voice-call source carries both sides, but only shell identities may read it. The app embeds an ADB client and pairs with the phone's own Wireless debugging over 127.0.0.1. Nothing leaves the phone.
 
-A short ADB session starts a shell daemon that writes each call to a file; the app is never on the audio path. Connections are authenticated both ways.
+A short ADB session grants WRITE_SECURE_SETTINGS, allow-lists a notification listener if asked, and starts a Java daemon from a bundled jar. The session closes; the daemon outlives it.
 
-<b>Recordings</b> are Ogg Opus files, about 12 MB an hour, in the phone's Recordings/AM Call Assistant folder. A recording starts at the answer; a call nobody answered is not kept. Automatic mode records every call; ask-first records nothing until you tap Record. Messenger calls (WhatsApp, Telegram, Signal, Viber) and Google Meet can be recorded too, both sides, app by app, Android 14+; all but Signal tested. It warns of a silent or cut-short recording, a recorder down, a call not recorded, or a setting in its way.
+<b>Recordings</b> are Ogg Opus, about 12 MB/hour, in Recordings/AM Call Assistant. Automatic records every call; ask-first waits for your tap. Messenger calls (WhatsApp, Telegram, Signal, Viber) and Google Meet on Android 14+. Warns of silent or cut-short recordings and settings in the way.
 
-<b>Playing, finding, keeping.</b> A call plays as its waveform, both sides in both ears, through the earpiece at your ear, and on with the screen off. A Calls tab shows each call: its recording, or why not. Deleted recordings wait 30 days in Recently deleted; auto-delete clears old and short ones. Keep only some people's calls; name files with the caller or number.
+<b>Playing, finding, keeping.</b> Waveform playback, both ears, earpiece, screen off. A Calls tab shows each call, or why not. Recently deleted keeps files 30 days; auto-delete clears old and short ones. Keep only some people's calls.
 
-<b>Three looks</b>: Memo; Deck, a pocket recorder; Multitrack, a sound editor - each light, dark or as the phone.
+<b>Three looks</b>: Memo, Deck, Multitrack - light, dark or as the phone.
 
-<b>Tasker</b>: two Plugin &gt; AM Call Assistant actions - Toggle AM Call Assistant, and AM Answering Machine with a typed, previewable greeting. Defaults use app values; Revert restores them.
+<b>Tasker</b>: three Plugin &gt; AM Call Assistant actions - Toggle, Answering Machine and Calling Machine. Number fields offer your contacts in a dropdown: type to filter, tap to fill. App defaults and Revert.
 
-<b>Answering machine</b>, off until you switch it on: it answers phone calls you don't take, plays your greeting - recorded or typed and spoken by the phone - your microphone muted, and keeps the caller's message, by the same rules as recording; you can still take the call. It pauses for a day after an emergency call. Experimental: checks and a test call say if it works on yours.
+<b>Answering machine</b>, off until enabled: plays your recorded, typed or audio-file greeting with the microphone muted and keeps the caller's message. Experimental; Diagnostics has a self-test.
 
-<b>Setup</b> takes two things by hand, once: turn on Developer options, then USB and Wireless debugging (one more switch on ColorOS, OxygenOS, realme UI), and type the pairing code into AM Call Assistant's notification. The pairing survives reboots, and Android's 7-day limit if you let it; the recorder restarts on the next Wi-Fi if the phone lets AM Call Assistant run on its own - setup asks; AM Call Assistant warns if it is stopped.
+<b>Calling Machine</b>: profiles place calls at a chosen time or from Tasker and play that profile's greeting.
 
-<b>What stays on.</b> USB and Wireless debugging stay on while AM Call Assistant is on: the recorder needs them. For banking apps, turning it off can hide Developer options or turn all debugging off. While debugging is on, a paired computer can connect on the same Wi-Fi. To stop for good, uninstall AM Call Assistant. Start without Wi-Fi opens port 5555 to run with no Wi-Fi until a reboot.
+<b>Setup</b>: turn on Developer options, USB and Wireless debugging, then pair once. Fresh installs can pick Shizuku instead (installed, running, allowing the app; no pairing code). Settings &gt; Setup &gt; Mode of operation shows the mode and switches it, keeping recordings, permissions and pairing. Pairing survives reboots and Android's 7-day limit if you let it; the recorder restarts on Wi-Fi if the phone allows it.
 
-<b>Requirements.</b> Android 12+, and a phone whose audio hardware hands over the voice-call source. Both sides recorded on an Honor Magic 8 Pro, Galaxy S20, S23, M34 and a OnePlus on LineageOS. Settings → Diagnostics has a self-test.
+<b>What stays on.</b> USB and Wireless debugging stay on while the app is on; a paired computer can connect on the same Wi-Fi. Start without Wi-Fi opens port 5555 until a reboot.
 
-<b>Recording calls is your responsibility.</b> Consent law differs by country and state. This app records what you tell it to and warns nobody on your behalf.
+<b>Requirements.</b> Android 12+, and a phone whose audio hardware exposes the voice-call source. Both sides recorded on Honor Magic 8 Pro, Galaxy S20, S23, M34 and a OnePlus on LineageOS.
 
-<b>What it does not ask for:</b> no RECORD_AUDIO, no phone state. INTERNET is needed for any TCP socket, even to 127.0.0.1, the only address used. READ_MEDIA_AUDIO (on Android 12, READ_EXTERNAL_STORAGE) is asked only to list recordings made before a reinstall. READ_CALL_LOG and READ_CONTACTS are optional: they name callers. MANAGE_ONGOING_CALLS tells AM Call Assistant when a call ends. Notification access hides Android's debugging notification or names a messenger caller.
+<b>Recording calls is your responsibility.</b> Consent law differs by country and state; the app warns nobody for you.
+
+<b>Not asked for:</b> RECORD_AUDIO or phone state. INTERNET is for the loopback socket and update check. READ_MEDIA_AUDIO lists old recordings. READ_CALL_LOG and READ_CONTACTS are optional, to name callers. MANAGE_ONGOING_CALLS detects call end. Notification access hides the debugging notification or names a messenger caller.

@@ -285,6 +285,7 @@ class MainViewModelRecorderTest {
      *  permissions, the debugging one, and - Android's pairing timeout off
      *  already - none about keeping the pairing (KeepPaired.needsChoice). */
     private fun pastTheQuestions() {
+        Setup.chooseMethod(context, Setup.METHOD_NATIVE)
         shadowOf(context).grantPermissions(*Setup.missingRuntimePermissions(context).toTypedArray())
         DebugNotificationCleaner.choose(context, false)
         Settings.Global.putString(context.contentResolver, KeepPaired.SETTING, "0")

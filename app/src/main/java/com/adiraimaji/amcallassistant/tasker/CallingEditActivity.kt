@@ -42,6 +42,7 @@ import com.adiraimaji.amcallassistant.capture.AudioAccess
 import com.adiraimaji.amcallassistant.calling.CallingGreetings
 import com.adiraimaji.amcallassistant.calling.CallingProfiles
 import com.adiraimaji.amcallassistant.ui.Capsules
+import com.adiraimaji.amcallassistant.ui.ContactDropdown
 import com.adiraimaji.amcallassistant.ui.CompactField
 import com.adiraimaji.amcallassistant.ui.RadioRow
 import com.adiraimaji.amcallassistant.ui.SettingsGroup
@@ -267,12 +268,16 @@ class CallingEditActivity : ComponentActivity() {
                             }
                             row {
                                 Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                                    CompactField(
+                                    ContactDropdown(
                                         value = number.value,
                                         onValueChange = { number.value = it.take(32); custom() },
                                         label = "Number",
-                                        placeholder = "Phone number or %variable",
+                                        placeholder = "Phone number, %variable or a contact",
                                         supporting = "A Tasker variable such as %NUMBER works here.",
+                                        onChoose = { chosen ->
+                                            number.value = chosen.number
+                                            custom()
+                                        },
                                     )
                                 }
                             }

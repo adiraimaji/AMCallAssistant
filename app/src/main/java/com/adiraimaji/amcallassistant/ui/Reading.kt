@@ -29,6 +29,7 @@ import com.adiraimaji.amcallassistant.recordings.RecordingStore
 import com.adiraimaji.amcallassistant.recordings.Retention
 import com.adiraimaji.amcallassistant.setup.PairingNotification
 import com.adiraimaji.amcallassistant.setup.Setup
+import com.adiraimaji.amcallassistant.system.ShizukuShell
 import com.adiraimaji.amcallassistant.system.ShellGrant
 import com.adiraimaji.amcallassistant.ui.theme.Look
 import com.adiraimaji.amcallassistant.ui.theme.Looks
@@ -81,6 +82,7 @@ internal fun <T> read(get: suspend (Application) -> T, put: UiState.(T) -> UiSta
  */
 internal fun asSaved(app: Application, state: UiState): UiState = state.copy(
     enabled = RecorderSwitch.isOn(app),
+    setupMethod = Setup.method(app),
     debuggingOff = DebugSwitchesOff.recorderGone(app),
     voipNames = VoipCallNotes.enabled(app),
     debugNotificationHidden = DebugNotificationCleaner.hiding(app),
@@ -132,6 +134,10 @@ private val SETTINGS: List<Read> = listOf(
     // the phone stays awake, the ping never misses, and none of it happens;
     // that is what made it look like a mystery rather than a timeout.
     read(CaptureDaemon::isRunningConfirmed) { copy(daemonRunning = it) },
+    // For Settings' "Mode of operation" row: the shell route is in use only
+    // while Shizuku's binder is there and permission was granted. On IO, not
+    // in asSaved: checkSelfPermission is a call out to Shizuku's service.
+    read({ ShizukuShell.binderAvailable() && ShizukuShell.granted() }) { copy(shizukuConnected = it) },
     // Read alongside the daemon check: if the recorder is down, the header
     // needs to know whether the ADB channel is even open before it tells the
     // user to wait for Wi-Fi.

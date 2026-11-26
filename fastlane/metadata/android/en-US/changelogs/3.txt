@@ -1,0 +1,6 @@
+Version 1.2.
+
+- Fresh installs choose native self-pairing or optional Shizuku; that route needs no pairing code or Wireless debugging.
+- Settings > Setup > Mode of operation shows the mode and switches it, keeping recordings, permissions and pairing.
+- Shizuku and forks such as Shizuku-Next list the app, and setup reaches Ready once instead of spinning.
+- Contacts are picked in-app: a number field shows every phone number, typing filters, picking fills it. Whose calls has its own panel.

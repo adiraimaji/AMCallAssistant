@@ -124,6 +124,52 @@ licence has been removed.
   the voice picker, greeting-field focus and the expanded plugin protocol.
 - Version bump: 1.0 (version code 1) → 1.1 (version code 2).
 
+## 1.2 — changes in this release
+
+### Setup modes
+
+- Fresh installs pick a bootstrap once: **native** (this phone's own Wireless
+  debugging and ADB pairing, the default) or the optional **Shizuku** route.
+  Installs made before the question existed keep their native route.
+- On the Shizuku route the shell work — granting WRITE_SECURE_SETTINGS and
+  notification access, re-asserting the off-Wi-Fi shield and starting the
+  recorder — runs through `ShizukuShell` whenever Shizuku has granted access.
+  No pairing code, mDNS, Wireless debugging or ADB identity is needed.
+  Native setup is unchanged.
+- `ShizukuProvider` declares `android.permission.INTERACT_ACROSS_USERS_FULL`, so
+  Shizuku and forks such as Shizuku-Next list AM Call Assistant in their
+  authorised-apps list and hand it their binder. Readiness is the binder plus
+  permission, not a particular Shizuku package name; binder, death and
+  permission listeners recheck setup as soon as access arrives. The app is
+  visible in Shizuku without first being granted from inside AM Call Assistant.
+- The Shizuku route now finishes once: after `finish()` succeeds, setup reaches
+  **READY** instead of returning to "starting the recorder" for ever.
+- **Settings → Setup → Mode of operation** shows whether AM Call Assistant is
+  connected with Shizuku or running in native mode, and switches between them.
+  Switching saves the new route and runs its setup steps again; recordings,
+  permissions and pairing are kept.
+
+### Contact picking
+
+- Contacts are read inside the app, one row per phone number (a contact with two
+  numbers appears twice), searchable by name or number. The same picker is used
+  in the Calling Machine editor, the **AM Calling Machine** Tasker action and
+  Whose calls.
+- In the Calling Machine and Tasker number fields the dropdown is attached to
+  the field: tapping it shows all contacts, typing in that same field filters
+  the list, and picking a row fills the number and closes the dropdown. There
+  is no separate contact-search box and no close button; the menu is the width
+  of the field rather than the screen.
+- Whose calls keeps its inline panel with its own search box, because adding
+  several contacts has no other field to type into.
+
+### Release
+
+- Version bump: 1.1 (version code 2) → 1.2 (version code 3); F-Droid changelog
+  `fastlane/metadata/android/en-US/changelogs/3.txt`. New tests cover the
+  Shizuku manifest contract, setup decisions for both routes, the Settings mode
+  summaries and contact filtering. Settings screenshots were re-recorded.
+
 ## Files changed by this fork
 
 Grouped summary of the files touched since upstream (new files included):
@@ -135,10 +181,12 @@ Grouped summary of the files touched since upstream (new files included):
   `answering/` (including the new `AnswerProfiles.kt`, `AnswerGreetings.kt`,
   `AudioGreeting.kt`), `audio/FilePath.kt`, `calling/`, `capture/`, `recorder/`,
   `recordings/`, `tasker/` (including the new `CallingEditActivity.kt`,
-  `ProfileDropdown.kt`, `TaskerGreetingEditor.kt`), `ui/` (including the new
-  `CallingMachineScreen.kt`, `InlineEditor.kt`, `VoicePickerDialog.kt`) under
+  `ProfileDropdown.kt`, `TaskerGreetingEditor.kt`), `system/` (the new `Shell.kt`
+  and `ShizukuShell.kt`), `ui/` (including the new `CallingMachineScreen.kt`,
+  `ContactPickerDialog.kt`, `InlineEditor.kt`, `VoicePickerDialog.kt`) under
   `app/src/main/java/com/adiraimaji/amcallassistant/`, plus their tests
-  (including `GreetingFieldFocusTest.kt`) and UI screenshots.
+  (including `GreetingFieldFocusTest.kt`, `ContactPickerTest.kt` and
+  `ShizukuManifestTest.kt`) and UI screenshots.
 - **Shell daemon (Java):** `shellserver/src/com/adiraimaji/amcallassistant/shell/`
   (`AnswerMachine.java`, `AnswerSettings.java`, `Commands.java`, `Wire.java`).
 - **Build and site tools:** `gradle.properties`, `tools/build_site.py`.
@@ -146,3 +194,5 @@ Grouped summary of the files touched since upstream (new files included):
 ## Release notes
 
 - Fork-wide overview: [README.md — Differences from JemRec](README.md#differences-from-jemrec)
+- 1.2 / version code 3: [`fastlane/metadata/android/en-US/changelogs/3.txt`](fastlane/metadata/android/en-US/changelogs/3.txt)
+- 1.1 / version code 2: [`fastlane/metadata/android/en-US/changelogs/2.txt`](fastlane/metadata/android/en-US/changelogs/2.txt)

@@ -5,6 +5,7 @@ import com.adiraimaji.amcallassistant.calls.CallRules.Contacts
 import com.adiraimaji.amcallassistant.calls.VoipApps
 import com.adiraimaji.amcallassistant.recorder.OffMode
 import com.adiraimaji.amcallassistant.recordings.FileNames
+import com.adiraimaji.amcallassistant.setup.Setup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -17,6 +18,22 @@ class SettingsSummaryTest {
 
     private val allowed = UiState(canReadCallLog = true, canReadContacts = true)
     private fun chosen(vararg names: String) = names.map { CallRules.Chosen(it, it, null) }
+
+    @Test fun modeRowSaysWhichBootstrapIsInUse() {
+        assertEquals("Native mode (Wireless debugging)", modeSummary(UiState(setupMethod = Setup.METHOD_NATIVE)))
+        assertEquals(
+            "Connected with Shizuku",
+            modeSummary(UiState(setupMethod = Setup.METHOD_SHIZUKU, shizukuConnected = true)),
+        )
+        assertTrue(
+            "not connected" in modeSummary(UiState(setupMethod = Setup.METHOD_SHIZUKU)),
+        )
+        assertEquals("Not chosen yet", modeSummary(UiState()))
+        assertEquals("Shizuku", modeLabel(Setup.METHOD_SHIZUKU))
+        assertEquals("Native (Wireless debugging)", modeLabel(Setup.METHOD_NATIVE))
+        assertTrue("Shizuku" in modeDetail(Setup.METHOD_SHIZUKU))
+        assertTrue("No Shizuku app is needed" in modeDetail(Setup.METHOD_NATIVE))
+    }
 
     @Test fun withoutPermissionEveryCallIsKept() {
         // The rules cannot apply without knowing who called - so whatever is

@@ -1,9 +1,6 @@
 ﻿package com.adiraimaji.amcallassistant.ui
 
-import android.content.ContentUris
 import android.content.Context
-import android.net.Uri
-import android.provider.ContactsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -213,12 +210,6 @@ internal fun CallingMachineScreen(vm: MainViewModel) {
         CallingTarget.request.collect { id -> vm.editCallingProfile(id) }
     }
 
-    val contactPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickContact()) { uri ->
-        if (uri != null) {
-            val (number, name) = contactDetails(context, uri)
-            draft = draft.copy(number = number.ifBlank { draft.number }, contactName = name)
-        }
-    }
     val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             audioPath = FilePath.fromUri(context, uri) ?: uri.toString()
@@ -452,18 +443,18 @@ internal fun CallingMachineScreen(vm: MainViewModel) {
                 }
                 row {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
-                        CompactField(
+                        ContactDropdown(
                             value = draft.number,
                             onValueChange = { draft = draft.copy(number = it, contactName = "") },
                             label = "Call to",
                             placeholder = "Contact or phone number",
                             isError = errorField == CallingErrorField.NUMBER && error != null,
                             supporting = draft.contactName.takeIf { it.isNotBlank() }
-                                ?.let { "Contact: $it" } ?: "A number, or pick a contact below",
+                                ?.let { "Contact: $it" } ?: "A number, or pick one from the list",
+                            onChoose = { chosen ->
+                                draft = draft.copy(number = chosen.number, contactName = chosen.name)
+                            },
                         )
-                        TextButton(onClick = { contactPicker.launch(null) }) {
-                            Text(if (draft.contactName.isBlank()) "Pick a contact" else "Pick another contact")
-                        }
                         InlineError(error?.takeIf { errorField == CallingErrorField.NUMBER })
                     }
                 }
@@ -952,25 +943,6 @@ private fun busyLabel(value: String): String = when (value) {
     CallingProfile.NOW -> "Call anyway"
     else -> "Call when the line is free"
 }
-
-private fun contactDetails(context: Context, uri: Uri): Pair<String, String> = runCatching {
-    var name = ""
-    var number = ""
-    context.contentResolver.query(uri, arrayOf(ContactsContract.Contacts.DISPLAY_NAME), null, null, null)?.use { rows ->
-        if (rows.moveToFirst()) name = rows.getString(0) ?: ""
-    }
-    val id = runCatching { ContentUris.parseId(uri) }.getOrNull()
-    if (id != null) {
-        context.contentResolver.query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
-            "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID}=?",
-            arrayOf(id.toString()),
-            null,
-        )?.use { rows -> if (rows.moveToFirst()) number = rows.getString(0) ?: "" }
-    }
-    number to name
-}.getOrDefault("" to "")
 
 private fun withDay(atMillis: Long, dayMillis: Long): Long {
     val old = Calendar.getInstance().apply { timeInMillis = atMillis }

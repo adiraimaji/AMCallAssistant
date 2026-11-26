@@ -99,6 +99,10 @@ fun SetupScreen(state: UiState, vm: MainViewModel, modifier: Modifier = Modifier
 
             SetupStep.NEEDS_PERMISSIONS -> PermissionsCard(state, permissionLauncher)
 
+            SetupStep.CHOOSE_SETUP_METHOD -> SetupMethodCard(vm)
+
+            SetupStep.NEEDS_SHIZUKU -> ShizukuPermissionCard(vm)
+
             // What setup leaves switched on, said BEFORE anything is switched
             // on, and the one part of it that is the user's to decide. Neither
             // answer is preselected or styled as the expected one: hiding
@@ -175,6 +179,70 @@ private fun CheckingCard() {
         ) {
             CircularProgressIndicator()
             Text("Checking...", style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
+private fun SetupMethodCard(vm: MainViewModel) {
+    val haptics = LocalHapticFeedback.current
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                "How should AM Call Assistant set up?",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                "Native setup pairs with this phone's Wireless debugging. Shizuku uses the " +
+                    "Shizuku app's shell permission instead. You can change this later with Start fresh.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Button(
+                onClick = {
+                    haptics.tap()
+                    vm.chooseSetupMethod(com.adiraimaji.amcallassistant.setup.Setup.METHOD_NATIVE)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Set up with native method") }
+            Button(
+                onClick = {
+                    haptics.tap()
+                    vm.chooseSetupMethod(com.adiraimaji.amcallassistant.setup.Setup.METHOD_SHIZUKU)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Set up with Shizuku") }
+        }
+    }
+}
+
+@Composable
+private fun ShizukuPermissionCard(vm: MainViewModel) {
+    val haptics = LocalHapticFeedback.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val alreadyAllowed =
+        com.adiraimaji.amcallassistant.system.ShizukuShell.ready(context)
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Allow Shizuku", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (alreadyAllowed) {
+                    "Shizuku access is already allowed. Continue to finish setup; no pairing code is needed."
+                } else {
+                    "Shizuku must be installed, running, and allowed to give this app shell access. " +
+                        "If you already allowed it in Shizuku or a fork, just continue. No pairing code is needed."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Button(
+                onClick = { haptics.tap(); vm.requestShizukuPermission() },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (alreadyAllowed) "Continue with Shizuku" else "Allow Shizuku") }
+            TextButton(
+                onClick = {
+                    haptics.tap()
+                    vm.chooseSetupMethod(com.adiraimaji.amcallassistant.setup.Setup.METHOD_NATIVE)
+                },
+            ) { Text("Use native method instead") }
         }
     }
 }

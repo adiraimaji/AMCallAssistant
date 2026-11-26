@@ -17,9 +17,12 @@ import com.adiraimaji.amcallassistant.setup.PairingNotification
 import com.adiraimaji.amcallassistant.setup.Setup
 import com.adiraimaji.amcallassistant.setup.SetupStep
 import com.adiraimaji.amcallassistant.system.AutoStart
+import com.adiraimaji.amcallassistant.system.ShizukuShell
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -94,6 +97,20 @@ internal class RecorderAndSetup(
     }
 
     private val awaitingRecorder = AtomicBoolean(false)
+
+    // Its own scope: a binder watcher lives as long as the view model, not as
+    // long as one action, so it must not leave an unfinished child in the
+    // screen's scope.
+    private val shizukuScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    init {
+        // A fork of Shizuku can hand us its binder at any moment and under any
+        // package name. Recheck setup when that happens instead of waiting for
+        // a permission dialog or an activity resume that may never come.
+        shizukuScope.launch {
+            ShizukuShell.binderEvents.collect { refreshSetup() }
+        }
+    }
 
     /**
      * "Starting..." until the recorder answers, then a fresh reading. Only
@@ -676,6 +693,35 @@ internal class RecorderAndSetup(
         if (state.value.step != SetupStep.READY) recheckSetup()
     }
 
+    /** Fresh-install choice: native ADB pairing or the optional Shizuku route. */
+    fun chooseSetupMethod(value: String) {
+        Setup.chooseMethod(app, value)
+        refreshSetup()
+    }
+
+    /**
+     * Change the bootstrap from Settings. Recordings, permissions and any
+     * pairing are kept; setup is marked unfinished so its steps run for the
+     * new route - Shizuku asks for its permission, native asks for pairing.
+     */
+    fun switchSetupMethod(value: String) {
+        if (value == Setup.method(app)) return
+        Setup.chooseMethod(app, value)
+        Setup.markIncomplete(app)
+        state.update { it.copy(setupMethod = value) }
+        refreshSetup()
+    }
+
+    /** Ask Shizuku for shell permission; MainActivity relays the result. */
+    fun requestShizukuPermission() {
+        val shell = com.adiraimaji.amcallassistant.system.ShizukuShell
+        // Forks such as Shizuku-Next often grant access from their own screen,
+        // so no permission dialog will appear here. If access is already there,
+        // just carry on with setup instead of asking again.
+        if (!shell.ready(app)) shell.requestPermission()
+        refreshSetup()
+    }
+
     /**
      * Keep AM Call Assistant paired, or not: the answer to setup's question, and the
      * switch in Settings after it (KeepPaired). The recorder carries it out
@@ -700,5 +746,6 @@ internal class RecorderAndSetup(
         stopWatchingSwitch()
         stopWatchingDebugSwitches()
         stopWatchingHiding()
+        shizukuScope.cancel()
     }
 }

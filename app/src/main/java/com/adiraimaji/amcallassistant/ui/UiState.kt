@@ -75,6 +75,12 @@ data class UiState(
     val busy: Boolean = false,
     val connected: Boolean = false,
     val daemonRunning: Boolean = false,
+    /** Which bootstrap the phone was set up with: Setup.METHOD_SHIZUKU or
+     *  Setup.METHOD_NATIVE. Blank until the fresh-install choice is made. */
+    val setupMethod: String = "",
+    /** Whether Shizuku is currently connected and allowed, for the Settings row
+     *  that says how AM Call Assistant is working. */
+    val shizukuConnected: Boolean = false,
     /**
      * Whether Wireless debugging is switched on - the channel the app needs to
      * relaunch the recorder. Defaults true so a not-yet-read state never blames

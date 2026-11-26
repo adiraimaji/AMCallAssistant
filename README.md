@@ -1,11 +1,17 @@
 ﻿# AM Call Assistant
 
-**Version 1.1 — current release**
+> **Modified from JemRec.** This project is an Apache-2.0 licensed fork of
+> JemRec; the changes made to the original project are listed in
+> [CHANGES.md](CHANGES.md).
+
+**Version 1.2 — current release**
 
 AM Call Assistant records phone calls and messenger calls on an unrooted Android
-phone, and can answer the call ringing right now with a spoken greeting. It needs
-no root, no Shizuku, no companion app and no computer: the phone pairs itself
-with its own Wireless debugging once, in setup.
+phone, and can answer the call ringing right now with a spoken greeting. Its
+native setup pairs the phone with its own Wireless debugging once and needs no
+root, no companion app and no computer; fresh installs can instead choose the
+optional Shizuku route if they already have Shizuku installed. Settings shows
+which mode is in use and can switch between them.
 
 This is an open-source fork of [JemRec](https://github.com/jemcik/JemRec) by
 Yevhen Yemchynskyi. See [Differences from JemRec](#differences-from-jemrec) and
@@ -40,6 +46,10 @@ Yevhen Yemchynskyi. See [Differences from JemRec](#differences-from-jemrec) and
   recordings list. Android's exact-alarm allowance is requested when a profile
   is saved.
 - Has three **Tasker / Locale** actions under **Plugin → AM Call Assistant**.
+- Number fields in the Calling Machine editor and the **AM Calling Machine**
+  action open a dropdown of your contacts: tapping the field shows every phone
+  number, typing in that same field filters the list, and picking a row fills
+  the number. One row is shown per number.
 - **Updates happen in the app.** Every opening checks GitHub for a newer release.
   When there is one, its release notes are shown with **Install** and **Cancel**;
   Install downloads `AM-Call-Assistant.apk` and passes it to Android's installer.
@@ -81,6 +91,12 @@ design. Where it differs from the upstream project:
   formats Android reads), chosen in the app or by path in the Tasker action.
 - **Calling Machine.** Scheduled outgoing calls with profiles, a Tasker action,
   and a recording tag; JemRec has no outgoing-call feature.
+- **Setup modes.** Native self-pairing is joined by an optional Shizuku route;
+  Settings shows the mode in use and can switch it. JemRec has only its ADB
+  setup.
+- **Contact picker.** Phone numbers are read inside the app and offered in a
+  dropdown attached to the number field; typing in the field filters the list.
+  JemRec has no in-app contact picker.
 - **Updates.** A built-in updater installs the newest release from GitHub;
   JemRec's setting opened the releases page in a browser.
 - **Release files.** The release APK is `AM-Call-Assistant.apk` and the debug
@@ -106,6 +122,13 @@ installed alongside this app; they use different packages, settings and folders.
    type the pairing code into the notification when asked.
 3. Run the self-test in Settings → Diagnostics to confirm both sides of a call
    are captured.
+
+A fresh install first asks which mode to use. **Native** follows the steps
+above. **Shizuku** needs Shizuku (or a compatible fork such as Shizuku-Next)
+installed, running and allowing AM Call Assistant, but no pairing code and no
+Wireless debugging. **Settings → Setup → Mode of operation** shows which one is
+in use and switches between them; switching runs the new mode's setup steps
+again and keeps your recordings, permissions and pairing.
 
 Pairing survives reboots, and Android's seven-day pairing limit if you let it.
 The recorder restarts after a reboot when the phone lets the app run on its own.

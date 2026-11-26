@@ -52,3 +52,8 @@ __pycache__/
 # The VoIP probe (shellserver/probe): a test tool, built by hand, never shipped
 /shellserver/probe/build/
 /shellserver/probe/voip-probe.jar
+
+# Local-only writing: drafted here, pasted to Reddit and the Releases page by
+# hand. These two are deliberately not part of the published repository.
+/socialmediapost.md
+/releasenote.md

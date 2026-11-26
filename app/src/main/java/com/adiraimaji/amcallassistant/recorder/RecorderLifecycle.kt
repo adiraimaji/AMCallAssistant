@@ -9,6 +9,7 @@ import com.adiraimaji.amcallassistant.capture.RecorderKeepAlive
 import com.adiraimaji.amcallassistant.capture.UsbDebuggingWatch
 import com.adiraimaji.amcallassistant.setup.Setup
 import com.adiraimaji.amcallassistant.system.GlobalSettings
+import com.adiraimaji.amcallassistant.system.Shell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
@@ -302,8 +303,9 @@ object RecorderLifecycle {
     /** Setup's off-Wi-Fi shield, written over the session setup opened, as
      *  the shell: the app's own WRITE_SECURE_SETTINGS is not live in this
      *  process until it restarts after setup granted it (Setup.finish). */
-    internal suspend fun shieldOverAdb(): String =
-        AdbTransport.exec("settings put global adb_enabled 1 && echo shielded").getOrElse { "failed: ${it.message}" }
+    internal suspend fun shieldOverAdb(context: Context): String =
+        Shell.exec(context, "settings put global adb_enabled 1 && echo shielded")
+            .getOrElse { "failed: ${it.message}" }
 
     /**
      * Whether a daemon should exist on this phone at all: setup finished, and an

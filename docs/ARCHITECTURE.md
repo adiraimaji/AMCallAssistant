@@ -13,6 +13,7 @@ this one is - or to check that it does what it says.
 
 - [The fact and the obstacle](#the-fact-and-the-obstacle)
 - The recorder: [ADB host and device](#the-phone-is-both-adb-host-and-adb-device) ·
+  [the other bootstrap](#the-other-bootstrap-shizuku) ·
   [bootstrap, not transport](#adb-is-a-bootstrap-not-a-transport) ·
   [the daemon records](#the-daemon-records-the-app-collects) ·
   [the authenticated socket](#the-socket-is-authenticated-in-both-directions) ·
@@ -60,8 +61,9 @@ app can hold. But `com.android.shell`, the UID an ADB session runs as, holds
 them both.
 
 **The obstacle.** Getting shell privilege normally means a computer, or root, or
-a second app like Shizuku that you keep alive. AM Call Assistant needs none of them,
-because the phone can be its own computer.
+a second app like Shizuku that you keep alive. AM Call Assistant needs none of them
+on its native route, because the phone can be its own computer. A fresh install
+may still choose Shizuku if it is already installed; see below.
 
 ## The phone is both ADB host and ADB device
 
@@ -70,6 +72,25 @@ Wireless debugging — the same SPAKE2 pairing a laptop does, with the six-digit
 code, except both ends are on the same handset. Nothing the recorder does leaves
 the phone; the only other request the app makes is the update check to GitHub's
 releases API.
+
+## The other bootstrap: Shizuku
+
+A fresh install is asked once which bootstrap to use. The default is the native
+route above. **Shizuku** is optional: `ShizukuShell` runs the same short shell
+work over Shizuku's binder (`IShizukuService.newProcess`) when Shizuku has
+granted access, so there is no pairing code, mDNS, Wireless debugging or ADB
+identity on that route. `Shell.exec` picks the route from `setup_method`; all
+callers above it are unchanged. `ShizukuProvider` declares
+`android.permission.INTERACT_ACROSS_USERS_FULL`, which is how Shizuku (and forks
+such as Shizuku-Next) finds the app and hands it the binder while the app is
+starting; readiness is binder plus permission, not a package name. Binder,
+binder-death and permission listeners recheck setup when access appears.
+
+Settings → Setup → Mode of operation shows which route is in use and changes
+it. Changing it saves the new method and marks setup unfinished so its steps
+run again; recordings, runtime permissions and any pairing are kept. On the
+Shizuku route `currentStep()` returns FINISHING only while setup is genuinely
+unfinished, so the last step reaches READY once `finish()` has succeeded.
 
 ## ADB is a bootstrap, not a transport
 

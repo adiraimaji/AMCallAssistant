@@ -751,6 +751,13 @@ class MainViewModel @JvmOverloads constructor(
     fun setHideDebugNotification(hide: Boolean) = recorder.setHideDebugNotification(hide)
     fun setKeepPaired(keep: Boolean) = recorder.setKeepPaired(keep)
 
+    fun chooseSetupMethod(value: String) = recorder.chooseSetupMethod(value)
+
+    /** Settings' mode-of-operation switch; setup runs again for the new route. */
+    fun switchSetupMethod(value: String) = recorder.switchSetupMethod(value)
+
+    fun requestShizukuPermission() = recorder.requestShizukuPermission()
+
     /** The screen is gone for good; a recording playing goes on playing,
      *  under the system's controls, until they stop it. */
     override fun onCleared() {

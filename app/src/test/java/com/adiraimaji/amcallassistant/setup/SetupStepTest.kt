@@ -29,6 +29,8 @@ class SetupStepTest {
         var wirelessDebugging: Boolean = false,
         var developerOptions: Boolean = true,
         var paired: Boolean = false,
+        var method: String = Setup.METHOD_NATIVE,
+        var shizukuReady: Boolean = false,
     ) : Setup.Probe {
         var connectAttempts = 0
         var retired = 0
@@ -49,9 +51,47 @@ class SetupStepTest {
         override fun wirelessDebuggingOn() = wirelessDebugging
         override fun developerOptionsOn() = developerOptions
         override fun hasPaired() = paired
+        override fun setupMethod() = method
+        override fun shizukuReady() = shizukuReady
     }
 
     private fun stepOf(world: World): SetupStep = runBlocking { Setup.decide(world) }
+
+    @Test fun afreshInstallChoosesItsBootstrapFirst() {
+        assertEquals(
+            SetupStep.CHOOSE_SETUP_METHOD,
+            stepOf(World(method = "", complete = false, identity = true, daemon = true, connected = true)),
+        )
+    }
+
+    @Test fun shizukuRouteWaitsForItsPermission() {
+        assertEquals(
+            SetupStep.NEEDS_SHIZUKU,
+            stepOf(World(method = Setup.METHOD_SHIZUKU, shizukuReady = false, identity = true, daemon = true)),
+        )
+        // Ready Shizuku, recorder up: done, not "starting the recorder" for ever.
+        assertEquals(
+            SetupStep.READY,
+            stepOf(
+                World(
+                    method = Setup.METHOD_SHIZUKU,
+                    shizukuReady = true,
+                    identity = false,
+                    daemon = true,
+                    debuggingChoice = true,
+                ),
+            ),
+        )
+    }
+
+    @Test fun shizukuRouteFinishesOnceThenStops() {
+        val world = World(method = Setup.METHOD_SHIZUKU, shizukuReady = true, daemon = false, complete = false)
+        assertEquals(SetupStep.FINISHING, stepOf(world))
+        // What finish() does: mark the phone set up and bring the recorder up.
+        world.complete = true
+        world.daemon = true
+        assertEquals(SetupStep.READY, stepOf(world))
+    }
 
     @Test fun permissionsComeBeforeEverythingElse() {
         val world = World(permissionsMissing = true, identity = true, daemon = true, connected = true)

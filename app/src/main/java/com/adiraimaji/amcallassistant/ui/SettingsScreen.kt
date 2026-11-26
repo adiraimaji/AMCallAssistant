@@ -1,5 +1,7 @@
 package com.adiraimaji.amcallassistant.ui
 
+import android.net.Uri
+
 import android.app.StatusBarManager
 import android.content.ComponentName
 import android.content.Context
@@ -67,7 +69,7 @@ import com.adiraimaji.amcallassistant.ui.theme.LocalLookChoice
 import com.adiraimaji.amcallassistant.ui.theme.lookMono
 
 /** Which of Settings' dialogs is open. Saved by name, so a rotation keeps it. */
-private enum class SettingsDialog { FOLDER, FILE_NAMES, QUALITY, OLD, SHORT, TRACKING_OFF, PLAY_THROUGH }
+private enum class SettingsDialog { FOLDER, FILE_NAMES, QUALITY, OLD, SHORT, TRACKING_OFF, PLAY_THROUGH, MODE }
 
 /**
  * The things that are not the answer to "would a call be recorded right now".
@@ -213,6 +215,24 @@ fun SettingsScreen(
                 TextButton(onClick = { haptics.confirm(); dialog = null; vm.setCallTracking(false) }) { Text("Turn both off") }
             },
             dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancel") } },
+        )
+        SettingsDialog.MODE -> ChoiceDialog(
+            title = "Mode of operation",
+            intro = "How AM Call Assistant gets shell access to start the recorder. " +
+                "Changing it runs setup again for the new mode; recordings and " +
+                "permissions are kept.",
+            choices = listOf(Setup.METHOD_SHIZUKU, Setup.METHOD_NATIVE),
+            selected = if (state.setupMethod == Setup.METHOD_SHIZUKU) {
+                Setup.METHOD_SHIZUKU
+            } else {
+                Setup.METHOD_NATIVE
+            },
+            label = ::modeLabel,
+            detail = ::modeDetail,
+            detailIsExample = false,
+            enabled = !state.busy,
+            onChoose = vm::switchSetupMethod,
+            onDismiss = { dialog = null },
         )
         null -> Unit
     }
@@ -483,6 +503,18 @@ fun SettingsScreen(
             }
         }
 
+        // Which bootstrap is in use, and a way to change it without Start fresh.
+        SettingsGroup("Setup") {
+            row {
+                SettingsRow(
+                    title = "Mode of operation",
+                    summary = modeSummary(state),
+                    icon = SettingsIcons.Link,
+                    onClick = { haptics.tap(); dialog = SettingsDialog.MODE },
+                )
+            }
+        }
+
         // Debugging, and what AM Call Assistant does with it: Android's reminder that it is
         // on, and what else goes off when AM Call Assistant does (issue #37).
         SettingsGroup("Debugging") {
@@ -673,6 +705,31 @@ internal fun keepPairedSummary(state: UiState): String = when {
         "Turned off, one older than Android's limit goes at once"
     else -> "Android forgets AM Call Assistant's pairing ${pairingDays(state.pairingDays)} after it is made. " +
         "Then AM Call Assistant has to pair again"
+}
+
+/** The Settings row's summary: which bootstrap the phone is actually using. */
+internal fun modeSummary(state: UiState): String = when (state.setupMethod) {
+    Setup.METHOD_SHIZUKU -> if (state.shizukuConnected) {
+        "Connected with Shizuku"
+    } else {
+        "Shizuku selected, but not connected yet - tap to set it up"
+    }
+    Setup.METHOD_NATIVE -> "Native mode (Wireless debugging)"
+    // A fresh install has not been asked yet; setup asks on the first open.
+    else -> "Not chosen yet"
+}
+
+/** Dialog names for the two bootstraps. */
+internal fun modeLabel(method: String): String = when (method) {
+    Setup.METHOD_SHIZUKU -> "Shizuku"
+    else -> "Native (Wireless debugging)"
+}
+
+internal fun modeDetail(method: String): String = when (method) {
+    Setup.METHOD_SHIZUKU ->
+        "Uses Shizuku's shell access. Shizuku must be installed, running, and allow AM Call Assistant."
+    else ->
+        "Uses Android's Wireless debugging and an ADB pairing. No Shizuku app is needed."
 }
 
 /** Settings' names for [RecordingQuality]: plain words, the rate in the detail. */
@@ -985,6 +1042,7 @@ fun WhoseCallsScreen(
     modifier: Modifier = Modifier,
 ) {
     val haptics = LocalHapticFeedback.current
+    var contactDialog by remember { mutableStateOf(false) }
 
     Column(modifier) {
         if (!state.canReadCallLog || !state.canReadContacts) {
@@ -1060,8 +1118,18 @@ fun WhoseCallsScreen(
                         titleColor = MaterialTheme.colorScheme.primary,
                         iconTint = MaterialTheme.colorScheme.primary,
                         icon = Icons.Filled.Person,
-                        onClick = { pickContact() },
+                        onClick = { contactDialog = !contactDialog },
                     )
+                }
+                if (contactDialog) {
+                    row {
+                        ContactListPanel(
+                            onChoose = { chosen ->
+                                vm.addRuleContact(Uri.parse(chosen.uri))
+                                contactDialog = false
+                            },
+                        )
+                    }
                 }
             }
         }

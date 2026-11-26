@@ -9,6 +9,8 @@ import com.adiraimaji.amcallassistant.calls.CallTracking
 import com.adiraimaji.amcallassistant.calls.VoipApps
 import com.adiraimaji.amcallassistant.capture.CallMonitorService
 import com.adiraimaji.amcallassistant.hex
+import com.adiraimaji.amcallassistant.setup.Setup
+import com.adiraimaji.amcallassistant.system.Shell
 import com.adiraimaji.amcallassistant.recordings.QualitySetting
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -297,7 +299,7 @@ object DaemonLauncher {
                 Log.i(TAG, "daemon: already running")
                 return Result.success(Unit)
             }
-            if (!AdbTransport.isConnected) {
+            if (!AdbTransport.isConnected && Setup.method(context) != Setup.METHOD_SHIZUKU) {
                 Log.i(
                     TAG,
                     "daemon: running build ${running.build}, this app carries ${bundledBuild(context)}; " +
@@ -336,7 +338,7 @@ object DaemonLauncher {
             }
         }
         return runCatching {
-            check(AdbTransport.isConnected) {
+            check(AdbTransport.isConnected || Setup.method(context) == Setup.METHOD_SHIZUKU) {
                 "ADB is not connected, so the daemon cannot be started. " +
                     "Connect once over Wi-Fi; after that recording needs no network."
             }
@@ -536,6 +538,8 @@ object DaemonLauncher {
         return out.absolutePath
     }
 
-    private suspend fun exec(command: String): String =
-        AdbTransport.exec(command).getOrElse { "<failed: ${it.message}>" }
+    private suspend fun exec(command: String): String {
+        val context = Shell.appContext ?: return "<failed: no app context>"
+        return Shell.exec(context, command).getOrElse { "<failed: ${it.message}>" }
+    }
 }

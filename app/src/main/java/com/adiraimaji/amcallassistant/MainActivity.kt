@@ -14,9 +14,11 @@ import com.adiraimaji.amcallassistant.capture.DebugNotificationCleaner
 import com.adiraimaji.amcallassistant.recorder.BackgroundKill
 import com.adiraimaji.amcallassistant.recorder.RecorderLifecycle
 import com.adiraimaji.amcallassistant.recorder.Trigger
+import com.adiraimaji.amcallassistant.system.ShizukuShell
 import com.adiraimaji.amcallassistant.ui.MainScreen
 import com.adiraimaji.amcallassistant.ui.theme.AmCallAssistantTheme
 import com.adiraimaji.amcallassistant.ui.theme.Looks
+import rikka.shizuku.Shizuku
 
 /**
  * Single activity. It owns the theme decision and nothing else - the whole of
@@ -24,6 +26,18 @@ import com.adiraimaji.amcallassistant.ui.theme.Looks
  * that has started keeping state the transport should own.
  */
 class MainActivity : ComponentActivity() {
+    // Returning from Shizuku's permission dialog resumes this activity, which
+    // rechecks setup; the listener only has to be registered for the request.
+    private val shizukuPermissionListener = Shizuku.OnRequestPermissionResultListener { _, _ ->
+        ShizukuShell.notifyBinderChanged()
+    }
+    private val shizukuBinderListener = Shizuku.OnBinderReceivedListener {
+        ShizukuShell.notifyBinderChanged()
+    }
+    private val shizukuBinderDeadListener = Shizuku.OnBinderDeadListener {
+        ShizukuShell.notifyBinderChanged()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // The launcher, over AM Call Assistant's task begun another way (a notification,
@@ -42,6 +56,11 @@ class MainActivity : ComponentActivity() {
             return
         }
         enableEdgeToEdge()
+        runCatching {
+            Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
+            Shizuku.addBinderReceivedListenerSticky(shizukuBinderListener)
+            Shizuku.addBinderDeadListener(shizukuBinderDeadListener)
+        }
 
         cameIn()
 
@@ -77,6 +96,15 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         com.adiraimaji.amcallassistant.update.Updater.appOpened()
+    }
+
+    override fun onDestroy() {
+        runCatching {
+            Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
+            Shizuku.removeBinderReceivedListener(shizukuBinderListener)
+            Shizuku.removeBinderDeadListener(shizukuBinderDeadListener)
+        }
+        super.onDestroy()
     }
 
     /** This window's task is one AM Call Assistant's own screen began. */

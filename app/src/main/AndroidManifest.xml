@@ -184,6 +184,7 @@
       need, on the one kind of app where that matters.
     -->
     <queries>
+        <package android:name="rikka.shizuku" />
         <package android:name="com.hihonor.systemmanager" />
         <package android:name="com.huawei.systemmanager" />
         <package android:name="com.miui.securitycenter" />
@@ -510,6 +511,23 @@
           file is shared deliberately instead of by loosening that. Its own
           subclass, as FileProvider's reference asks (RecordingsFileProvider).
         -->
+        <!-- Optional Shizuku route. Shizuku's own app binds this provider to
+             hand us its shell-privileged binder; native ADB setup does not use
+             it and works on phones with Shizuku absent. Shizuku (and forks
+             such as Shizuku-Next) list an app as a Shizuku client only when
+             this provider carries INTERACT_ACROSS_USERS_FULL: without it the
+             app is invisible in their authorised-apps list until a permission
+             request registers it. The shell-side server holds that permission
+             whatever package name the Shizuku app uses. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"
+            tools:ignore="ExportedConfiguration" />
+
         <provider
             android:name=".recordings.RecordingsFileProvider"
             android:authorities="${applicationId}.recordings"

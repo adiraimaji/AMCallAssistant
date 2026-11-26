@@ -65,6 +65,12 @@ so without this dependency `exportKeyingMaterial` simply does not exist and
 pairing cannot complete. Bundling it is what lets AM Call Assistant avoid hidden-API
 exemptions altogether. <https://github.com/google/conscrypt>
 
+## Shizuku API and provider
+
+Copyright Rikka and contributors, MIT licence. Used only on the optional setup
+route the user can choose on a fresh install; the native ADB setup needs none of
+it. <https://github.com/RikkaApps/Shizuku-API>
+
 ## scrcpy
 
 Copyright 2018 Genymobile, Apache-2.0. Vendored, as source, in `shellserver/`:

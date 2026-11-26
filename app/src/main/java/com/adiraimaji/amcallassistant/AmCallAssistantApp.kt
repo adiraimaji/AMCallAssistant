@@ -24,6 +24,7 @@ class AmCallAssistantApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        com.adiraimaji.amcallassistant.system.Shell.appContext = this
         // Off the main thread: binder calls, and a call's wake may be what
         // started this process.
         val app = this

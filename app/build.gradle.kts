@@ -267,6 +267,14 @@ dependencies {
     implementation("org.bouncycastle:bcprov-jdk15to18:1.87")
     implementation("org.bouncycastle:bcpkix-jdk15to18:1.87")
 
+    // Optional second bootstrap. Shizuku supplies a shell-privileged binder;
+    // when the user chooses it in setup the daemon is launched over that
+    // instead of pairing the phone's own Wireless debugging. The native ADB
+    // route keeps working with none of these classes present at runtime for
+    // users who never opt in.
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
+
     // REQUIRED FOR PAIRING, and not obvious why.
     //
     // SPAKE2 binds the pairing exchange to the TLS channel by mixing in RFC
